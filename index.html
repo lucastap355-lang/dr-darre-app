@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#231C21">
+<meta name="description" content="Vendas, estoque e etiquetas da loja DR Darre.">
+<title>DR Darre – Sistema de vendas</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/favicon-64.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="DR Darre">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="preload" href="fonts/dm-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/bodoni-moda-latin-500-normal.woff2" as="font" type="font/woff2" crossorigin>
+<style id="page-style"></style>
+<link rel="stylesheet" href="css/estilo.css">
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="#inicio"><b id="brand-nome">DR Darre</b><small id="brand-sub">Moda &amp; acessórios</small></a>
+  <span class="grow"></span>
+  <button class="sync" id="sync-pill" type="button" data-s="local"><i></i><span>Só neste aparelho</span></button>
+  <button class="icon-btn" id="btn-tema" type="button" aria-label="Alternar tema claro ou escuro">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor"/></svg>
+  </button>
+</header>
+
+<nav class="nav" id="nav" aria-label="Seções">
+  <button data-go="inicio"><svg viewBox="0 0 24 24"><path d="M3.5 10.5 12 4l8.5 6.5V20a1 1 0 0 1-1 1H15v-6H9v6H4.5a1 1 0 0 1-1-1z"/></svg><span>Início</span></button>
+  <button data-go="vender"><svg viewBox="0 0 24 24"><path d="M5 8h14l-1.2 12.1a1 1 0 0 1-1 .9H7.2a1 1 0 0 1-1-.9z"/><path d="M9 10V6.5a3 3 0 0 1 6 0V10"/></svg><span>Vender</span></button>
+  <button data-go="produtos"><svg viewBox="0 0 24 24"><path d="M10 5.5a2 2 0 1 1 2 2v2"/><path d="M12 9.5 3.4 16.3a1 1 0 0 0 .6 1.7h16a1 1 0 0 0 .6-1.7z"/></svg><span>Produtos</span></button>
+  <button data-go="vendas"><svg viewBox="0 0 24 24"><path d="M4 20h16"/><path d="M7 16v-5"/><path d="M12 16V6"/><path d="M17 16v-8"/></svg><span>Vendas</span></button>
+  <button data-go="ajustes"><svg viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg><span>Ajustes</span></button>
+</nav>
+
+<main class="shell">
+  <section class="view" id="v-inicio"></section>
+
+  <section class="view" id="v-vender" hidden>
+    <div class="pdv">
+      <div>
+        <h1 class="h1">Nova venda</h1>
+        <div class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+          <input id="busca" placeholder="Leia a etiqueta ou busque a peça" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done" aria-label="Buscar peça">
+          <button class="icon-btn" id="btn-scan" type="button" aria-label="Ler QR code com a câmera" title="Ler com a câmera">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16M7 12h10"/></svg>
+          </button>
+          <div class="sugs" id="sugs" role="listbox" hidden></div>
+        </div>
+        <div id="cart"></div>
+      </div>
+      <aside class="panel pdv-side" aria-label="Fechamento da venda">
+        <div class="row"><span>Subtotal</span><strong id="t-sub">R$ 0,00</strong></div>
+        <div class="row"><span>Desconto</span>
+          <div class="descbox"><input id="desc" inputmode="decimal" placeholder="0" aria-label="Desconto">
+            <div class="seg" id="desc-tipo"><button type="button" data-v="%" aria-pressed="true">%</button><button type="button" data-v="R$" aria-pressed="false">R$</button></div>
+          </div>
+        </div>
+        <div class="total"><span>Total</span><strong id="t-tot">R$ 0,00</strong></div>
+        <span class="lbl">Forma de pagamento</span>
+        <div class="chips" id="pgto">
+          <button type="button" data-v="Pix" aria-pressed="false">Pix</button>
+          <button type="button" data-v="Dinheiro" aria-pressed="false">Dinheiro</button>
+          <button type="button" data-v="Débito" aria-pressed="false">Débito</button>
+          <button type="button" data-v="Crédito" aria-pressed="false">Crédito</button>
+        </div>
+        <div id="pg-extra"></div>
+        <details class="cli"><summary>Cliente <span class="muted">&nbsp;(opcional)</span></summary>
+          <div><input id="cli-nome" list="dl-clientes" placeholder="Nome da cliente" autocomplete="off"><input id="cli-tel" inputmode="tel" placeholder="WhatsApp com DDD" autocomplete="off"></div>
+        </details>
+        <button class="btn primary lg block" id="btn-fin" type="button">Finalizar venda</button>
+        <button class="link" id="btn-limpar" type="button">Limpar venda</button>
+        <p class="kbd">F2 abre esta tela · Ctrl + Enter finaliza</p>
+      </aside>
+    </div>
+  </section>
+
+  <section class="view" id="v-produtos" hidden>
+    <div class="vhead"><h1 class="h1">Produtos</h1><button class="btn primary" type="button" data-act="nova-peca">Nova peça</button></div>
+    <div class="toolbar">
+      <input id="p-busca" type="search" placeholder="Buscar por nome, código ou cor" aria-label="Buscar produtos">
+      <select id="p-tipo" aria-label="Filtrar por tipo"></select>
+      <label class="check"><input type="checkbox" id="p-baixo"> Só estoque baixo</label>
+    </div>
+    <div class="selbar" id="selbar" hidden><span id="sel-n" class="grow"></span><button class="btn ghost sm" type="button" data-act="sel-etq">Imprimir etiquetas</button><button class="link" type="button" data-act="sel-clear">Limpar</button></div>
+    <p class="muted" id="p-resumo" style="font-size:13.5px;margin-bottom:8px"></p>
+    <div id="plist"></div>
+  </section>
+
+  <section class="view" id="v-vendas" hidden>
+    <div class="vhead"><h1 class="h1">Vendas</h1><button class="btn ghost" type="button" data-act="csv-vendas">Exportar planilha</button></div>
+    <div class="toolbar">
+      <div class="seg" id="per">
+        <button type="button" data-v="hoje" aria-pressed="true">Hoje</button>
+        <button type="button" data-v="7" aria-pressed="false">7 dias</button>
+        <button type="button" data-v="30" aria-pressed="false">30 dias</button>
+        <button type="button" data-v="mes" aria-pressed="false">Este mês</button>
+        <button type="button" data-v="per" aria-pressed="false">Período</button>
+      </div>
+      <input type="date" id="per-de" aria-label="De" hidden style="flex:0 1 160px">
+      <input type="date" id="per-ate" aria-label="Até" hidden style="flex:0 1 160px">
+      <select id="per-forma" aria-label="Forma de pagamento" style="flex:0 1 190px">
+        <option value="">Todas as formas</option><option>Pix</option><option>Dinheiro</option><option>Débito</option><option>Crédito</option>
+      </select>
+    </div>
+    <div id="vres"></div>
+  </section>
+
+  <section class="view" id="v-ajustes" hidden></section>
+</main>
+
+<dialog id="dlg"></dialog>
+<dialog id="dlg-confirm"></dialog>
+<div id="toasts" popover="manual"></div>
+<div id="print"></div>
+<datalist id="dl-tipos"></datalist>
+<datalist id="dl-cores"></datalist>
+<datalist id="dl-clientes"></datalist>
+
+<script src="js/app.js"></script>
+</body>
+</html>
