@@ -55,28 +55,36 @@ const DEF_CFG = {
   nome: 'DR Darre', subtitulo: 'Moda & acessórios', whatsapp: '', instagram: '',
   rodape: 'Obrigada pela preferência! Trocas em até 7 dias com a etiqueta.',
   tipos: ['Blusa', 'Vestido', 'Calça', 'Saia', 'Short', 'Macacão', 'Conjunto', 'Jaqueta', 'Body', 'Acessório'],
-  tamanhos: ['PP', 'P', 'M', 'G', 'GG', 'XG', 'Único']
+  tamanhos: ['PP', 'P', 'M', 'G', 'GG', 'XG', 'Único'],
+  vendedores: ['Regina', 'Bianca']
 };
 const TABELAS = ['produtos', 'ajustes', 'vendas', 'config'];
 let S = novoEstado();
 function novoEstado() {
   return {
-    v: 3, produtos: {}, vendas: {}, ajustes: {},
+    v: 3, produtos: {}, vendas: {}, ajustes: {}, movs: {}, vendedor: '',
     config: { id: 'loja', valor: { ...DEF_CFG } },
     outbox: { produtos: {}, ajustes: {}, vendas: {}, config: {} },
-    cursor: { produtos: '', vendas: '', config: '' },
+    cursor: { produtos: '', vendas: '', config: '', ajustes: '' },
     cloud: null, lastUrl: null, lastSync: null, tema: 'auto'
   };
 }
 const persist = debounce(() => KV.set('state', S), 250);
 function salvarJa() { return KV.set('state', S); }
 function dirty(t, id) { S.outbox[t][id] = (S.outbox[t][id] || 0) + 1; persist(); pintarSync(); agendarSync(); }
-function addAjuste(produto_id, delta, motivo) {
+// cada ajuste de estoque vira uma movimentação: vai para a nuvem (S.ajustes, apagado após o envio)
+// e fica no histórico deste aparelho (S.movs, usado na aba Estoque e na consulta)
+function addAjuste(produto_id, delta, motivo, extra = {}) {
   if (!delta) return;
   const id = uid();
-  S.ajustes[id] = { id, produto_id, delta: Math.trunc(delta), motivo: motivo || null, created_at: nowISO() };
+  const a = { id, produto_id, delta: Math.trunc(delta), motivo: motivo || null, created_at: nowISO(),
+    tipo: extra.tipo || (motivo === 'Cadastro' ? 'cadastro' : motivo === 'Ajuste manual' ? 'ajuste' : 'carga'),
+    venda_id: extra.venda_id || null, cliente: extra.cliente || null, vendedor: extra.vendedor || null, valor: extra.valor ?? null };
+  S.ajustes[id] = a; S.movs[id] = { ...a };
   dirty('ajustes', id);
 }
+const tipoMov = a => a.tipo || (a.motivo === 'Cadastro' ? 'cadastro' : a.motivo === 'Ajuste manual' ? 'ajuste' : 'carga');
+const NOME_MOV = { cadastro: 'Cadastro', entrada: 'Entrada', ajuste: 'Ajuste', devolucao: 'Devolução', carga: 'Carga', venda: 'Venda' };
 const cfg = () => S.config.valor;
 const ativos = () => Object.values(S.produtos).filter(p => !p.deleted);
 const nomeP = p => (p.descricao && p.descricao.trim()) || p.tipo || 'Peça';
@@ -99,7 +107,7 @@ function importarV2(d) {
     const id = uid();
     S.produtos[id] = { id, codigo: String(p.codigo || novoCodigo(p.tipo)), tipo: p.tipo || 'Peça', descricao: '', tamanho: p.tamanho || '', cor: p.cor || '',
       preco: r2(p.valor), custo: null, qtd: Math.trunc(+p.quantidade || 0), estoque_min: 2, deleted: false, created_at: parseBR(p.dataCadastro) || nowISO() };
-    porCod[p.codigo] = id; dirty('produtos', id); addAjuste(id, S.produtos[id].qtd, 'Importado do sistema anterior'); np++;
+    porCod[p.codigo] = id; dirty('produtos', id); addAjuste(id, S.produtos[id].qtd, 'Importado do sistema anterior', { tipo: 'carga' }); np++;
   });
   (d.vendas || []).forEach(v => {
     const agrup = {};
@@ -144,10 +152,11 @@ const Cloud = {
 const PICK = {
   produtos: p => ({ id: p.id, codigo: p.codigo, tipo: p.tipo ?? null, descricao: p.descricao ?? null, tamanho: p.tamanho ?? null, cor: p.cor ?? null,
     preco: r2(p.preco), custo: p.custo == null ? null : r2(p.custo), estoque_min: Math.trunc(+p.estoque_min || 0), deleted: !!p.deleted, created_at: p.created_at || nowISO() }),
-  ajustes: a => ({ id: a.id, produto_id: a.produto_id, delta: a.delta, motivo: a.motivo ?? null, created_at: a.created_at }),
+  ajustes: a => ({ id: a.id, produto_id: a.produto_id, delta: a.delta, motivo: a.motivo ?? null, created_at: a.created_at,
+    tipo: tipoMov(a), venda_id: a.venda_id ?? null, cliente: a.cliente ?? null, vendedor: a.vendedor ?? null, valor: a.valor == null ? null : r2(a.valor) }),
   vendas: v => ({ id: v.id, numero: v.numero, data: v.data, itens: v.itens, subtotal: r2(v.subtotal), desconto: r2(v.desconto), desconto_tipo: v.desconto_tipo ?? null,
     total: r2(v.total), forma: v.forma ?? null, parcelas: v.parcelas || 1, recebido: v.recebido ?? null, troco: v.troco ?? null,
-    cliente_nome: v.cliente_nome ?? null, cliente_tel: v.cliente_tel ?? null, cancelada: !!v.cancelada, baixa_estoque: v.baixa_estoque !== false }),
+    cliente_nome: v.cliente_nome ?? null, cliente_tel: v.cliente_tel ?? null, vendedor: v.vendedor ?? null, cancelada: !!v.cancelada, baixa_estoque: v.baixa_estoque !== false }),
   config: () => ({ id: 'loja', valor: S.config.valor })
 };
 const FONTE = { produtos: id => S.produtos[id], ajustes: id => S.ajustes[id], vendas: id => S.vendas[id], config: id => id === 'loja' ? S.config : null };
@@ -180,6 +189,7 @@ async function receber(t) {
     const emUso = t === 'produtos' ? produtosEmUso() : null;
     for (const r of rows) {
       if (t === 'config') { if (r.id === 'loja' && !S.outbox.config.loja) S.config = { id: 'loja', valor: { ...DEF_CFG, ...(r.valor || {}) }, updated_at: r.updated_at }; continue; }
+      if (t === 'ajustes') { S.movs[r.id] = r; continue; }            // só histórico: o estoque já vem certo em produtos.qtd
       if (S.outbox[t][r.id]) continue;
       if (t === 'produtos' && emUso.has(r.id) && S.produtos[r.id]) { S.produtos[r.id] = { ...r, qtd: S.produtos[r.id].qtd }; continue; }
       S[t][r.id] = r;
@@ -198,7 +208,7 @@ async function sync(manual) {
   sincronizando = true; pintarSync('sync');
   try {
     for (const t of TABELAS) await enviar(t);           // produtos → ajustes → vendas → config
-    for (const t of ['produtos', 'vendas', 'config']) await receber(t);
+    for (const t of ['produtos', 'vendas', 'config', 'ajustes']) await receber(t);
     S.lastSync = nowISO(); S.cloud.erro = null; persist();
     renderDados();
     if (manual) toast('Tudo sincronizado com a nuvem.', 'ok');
@@ -213,6 +223,7 @@ async function sync(manual) {
 }
 const agendarSync = debounce(() => sync(), 1500);
 function traduzErro(m) {
+  if (/PGRST204|42703|column .* does not exist|Could not find the '/i.test(m)) return 'o banco da nuvem precisa da atualização desta versão (vendedora e devoluções). Rode de novo o script SQL (Ajustes › Como preparar a nuvem).';
   if (/PGRST205|42P01|does not exist|schema cache/i.test(m)) return 'as tabelas não existem no Supabase. Rode o script SQL (Ajustes › Como preparar a nuvem).';
   if (/42501|row-level security|permission/i.test(m)) return 'sem permissão. Confira se o script SQL foi executado por completo.';
   if (/Failed to fetch|NetworkError|Load failed/i.test(m)) return 'não foi possível alcançar o servidor. Confira o endereço do projeto e a internet.';
@@ -220,8 +231,8 @@ function traduzErro(m) {
 }
 function reenviarTudo() {
   S.ajustes = {}; S.outbox = { produtos: {}, ajustes: {}, vendas: {}, config: { loja: 1 } };
-  S.cursor = { produtos: '', vendas: '', config: '' };
-  Object.values(S.produtos).forEach(p => { S.outbox.produtos[p.id] = 1; if (p.qtd) addAjuste(p.id, p.qtd, 'Carga inicial deste aparelho'); });
+  S.cursor = { produtos: '', vendas: '', config: '', ajustes: '' };
+  Object.values(S.produtos).forEach(p => { S.outbox.produtos[p.id] = 1; if (p.qtd) addAjuste(p.id, p.qtd, 'Carga inicial deste aparelho', { tipo: 'carga' }); });
   Object.values(S.vendas).forEach(v => { v.baixa_estoque = false; S.outbox.vendas[v.id] = 1; });
   persist();
 }
@@ -272,7 +283,7 @@ function baixar(nome, conteudo, tipo) {
 }
 
 // ---------- navegação ----------
-const VISTAS = ['inicio', 'vender', 'produtos', 'vendas', 'ajustes'];
+const VISTAS = ['inicio', 'vender', 'produtos', 'estoque', 'vendas', 'ajustes'];
 let vista = 'inicio';
 function mostrar() {
   vista = VISTAS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'inicio';
@@ -281,6 +292,7 @@ function mostrar() {
   window.scrollTo(0, 0);
   if (vista === 'ajustes') rAjustes(); else renderDados();
   if (vista === 'vender' && matchMedia('(pointer:fine)').matches) setTimeout(() => $('#busca').focus(), 30);
+  if (vista === 'estoque' && matchMedia('(pointer:fine)').matches) setTimeout(() => $('#cons-busca').focus(), 30);
 }
 function ir(v) { if (location.hash === '#' + v) mostrar(); else location.hash = v; }
 function renderDados() {
@@ -288,6 +300,7 @@ function renderDados() {
   if (vista === 'inicio') rInicio();
   if (vista === 'vender') rCarrinho();
   if (vista === 'produtos') rProdutos();
+  if (vista === 'estoque') rEstoque();
   if (vista === 'vendas') rVendas();
   if (vista === 'ajustes') pintarNuvem();
 }
@@ -299,7 +312,13 @@ function listasAux() {
   const cli = {}; Object.values(S.vendas).forEach(v => { if (v.cliente_nome) cli[v.cliente_nome] = v.cliente_tel || cli[v.cliente_nome] || ''; });
   $('#dl-clientes').innerHTML = Object.keys(cli).sort().map(n => `<option value="${esc(n)}">`).join('');
   listasAux.clientes = cli;
+  pintarVendedoras();
+  const fv = $('#per-vend'), fvv = fv.value;
+  const nomes = [...new Set([...vendedoras(), ...Object.values(S.vendas).map(v => v.vendedor).filter(Boolean)])];
+  fv.innerHTML = '<option value="">Todas as vendedoras</option>' + nomes.map(n => `<option ${n === fvv ? 'selected' : ''}>${esc(n)}</option>`).join('') + '<option value="-">Sem vendedora</option>';
+  if (fvv === '-') fv.value = '-';
 }
+const vendedoras = () => (cfg().vendedores && cfg().vendedores.length ? cfg().vendedores : DEF_CFG.vendedores);
 
 // ---------- INÍCIO ----------
 function rInicio() {
@@ -423,6 +442,21 @@ function pintarTroco() {
   const t = r2(rec - tot); el.className = 'troco' + (t < 0 ? ' bad' : '');
   el.innerHTML = t < 0 ? `<span>Faltam</span><span>${money(-t)}</span>` : `<span>Troco</span><span>${money(t)}</span>`;
 }
+// vendedora: fica escolhida neste aparelho de uma venda para outra
+function pintarVendedoras() {
+  const el = $('#vend'); if (!el) return;
+  const ls = vendedoras(), sel = S.vendedor || '';
+  el.style.gridTemplateColumns = `repeat(${Math.min(ls.length + 1, 4)},1fr)`;
+  el.innerHTML = [...ls, 'Outros'].map(n => `<button type="button" data-v="${esc(n)}" aria-pressed="${n === sel}">${esc(n)}</button>`).join('');
+  $('#vend-outro').hidden = sel !== 'Outros';
+}
+$('#vend').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  S.vendedor = b.dataset.v; persist(); pintarVendedoras();
+  if (S.vendedor === 'Outros') { $('#vend-outro').value = S.vendedorOutro || ''; $('#vend-outro').focus(); }
+});
+$('#vend-outro').addEventListener('input', e => { S.vendedorOutro = e.target.value; persist(); });
+function vendedorAtual() { return S.vendedor === 'Outros' ? ($('#vend-outro').value.trim()) : (S.vendedor || ''); }
 $('#cli-nome').addEventListener('change', e => { const t = (listasAux.clientes || {})[e.target.value]; if (t && !$('#cli-tel').value) $('#cli-tel').value = t; });
 function limparVenda() {
   carrinho = []; forma = ''; descTipo = '%';
@@ -436,6 +470,8 @@ $('#btn-fin').addEventListener('click', finalizar);
 function finalizar() {
   if (!carrinho.length) return toast('Adicione pelo menos uma peça à venda.', 'warn');
   if (!forma) { toast('Escolha a forma de pagamento.', 'warn'); $('#pgto button').focus(); return; }
+  const vendedor = vendedorAtual();
+  if (!vendedor) { toast(S.vendedor === 'Outros' ? 'Escreva o nome de quem vendeu.' : 'Escolha quem fez a venda.', 'warn'); (S.vendedor === 'Outros' ? $('#vend-outro') : $('#vend button')).focus(); return; }
   for (const i of carrinho) { const p = S.produtos[i.produto_id]; if (i.qtd > p.qtd) return toast(`Estoque insuficiente de ${nomeP(p)} ${p.tamanho}.`, 'bad'); }
   const { sub, desc, tot } = calc();
   let recebido = null, troco = null;
@@ -446,7 +482,7 @@ function finalizar() {
     data: d.toISOString(),
     itens: carrinho.map(i => { const p = S.produtos[i.produto_id]; return { produto_id: p.id, codigo: p.codigo, nome: nomeP(p), tamanho: p.tamanho, cor: p.cor, preco: r2(p.preco), custo: p.custo ?? null, qtd: i.qtd }; }),
     subtotal: sub, desconto: desc, desconto_tipo: descTipo, total: tot, forma, parcelas: forma === 'Crédito' ? +($('#parc')?.value || 1) : 1,
-    recebido, troco, cliente_nome: $('#cli-nome').value.trim() || null, cliente_tel: soDigitos($('#cli-tel').value) || null, cancelada: false, baixa_estoque: true
+    recebido, troco, cliente_nome: $('#cli-nome').value.trim() || null, cliente_tel: soDigitos($('#cli-tel').value) || null, vendedor, cancelada: false, baixa_estoque: true
   };
   v.itens.forEach(i => { S.produtos[i.produto_id].qtd -= i.qtd; });
   S.vendas[id] = v; dirty('vendas', id); salvarJa();
@@ -457,7 +493,7 @@ function finalizar() {
 function reciboHTML(v) {
   const c = cfg();
   return `<div class="rec"><div class="rec-brand">${esc(c.nome)}</div>${c.subtitulo ? `<div class="rec-sub">${esc(c.subtitulo)}</div>` : ''}
-    <div class="rec-meta">Venda ${esc(v.numero)}<br>${fmtDT(v.data)}${v.cliente_nome ? `<br>Cliente: ${esc(v.cliente_nome)}` : ''}</div>
+    <div class="rec-meta">Venda ${esc(v.numero)}<br>${fmtDT(v.data)}${v.cliente_nome ? `<br>Cliente: ${esc(v.cliente_nome)}` : ''}${v.vendedor ? `<br>Atendida por ${esc(v.vendedor)}` : ''}</div>
     <table class="rec-items">${v.itens.map(i => `<tr><td>${i.qtd}× ${esc(i.nome)}<br><small>${esc(i.tamanho)} ${esc(i.cor)} ${esc(i.codigo)}</small></td><td>${money(i.preco * i.qtd)}</td></tr>`).join('')}</table>
     <div class="rec-tot"><div><span>Subtotal</span><span>${money(v.subtotal)}</span></div>
       ${v.desconto > 0 ? `<div><span>Desconto</span><span>− ${money(v.desconto)}</span></div>` : ''}
@@ -465,6 +501,7 @@ function reciboHTML(v) {
       <div><span>${esc(v.forma)}${v.forma === 'Crédito' && v.parcelas > 1 ? ` em ${v.parcelas}x de ${money(v.total / v.parcelas)}` : ''}</span><span></span></div>
       ${v.recebido ? `<div><span>Recebido</span><span>${money(v.recebido)}</span></div><div><span>Troco</span><span>${money(v.troco)}</span></div>` : ''}</div>
     ${v.cancelada ? '<div class="rec-cancel">Venda cancelada</div>' : ''}
+    ${devolucoesDe(v.id).length ? `<div class="rec-dev">${devolucoesDe(v.id).map(d => `Devolvida: ${d.delta}× ${esc(nomeMov(d))} em ${new Date(d.created_at).toLocaleDateString('pt-BR')}`).join('<br>')}</div>` : ''}
     ${c.rodape ? `<p class="rec-foot">${esc(c.rodape)}</p>` : ''}${c.instagram ? `<p class="rec-foot">${esc(c.instagram)}</p>` : ''}</div>`;
 }
 function textoWa(v) {
@@ -472,7 +509,7 @@ function textoWa(v) {
   const itens = v.itens.map(i => `• ${i.qtd}x ${i.nome} ${i.tamanho} ${i.cor}: ${money(i.preco * i.qtd)}`).join('\n');
   return `*${c.nome}*\nComprovante da venda ${v.numero}\n${fmtDT(v.data)}\n\n${itens}\n\nSubtotal: ${money(v.subtotal)}` +
     (v.desconto > 0 ? `\nDesconto: -${money(v.desconto)}` : '') + `\n*Total: ${money(v.total)}*\nPagamento: ${v.forma}` +
-    (v.forma === 'Crédito' && v.parcelas > 1 ? ` em ${v.parcelas}x` : '') + (c.rodape ? `\n\n${c.rodape}` : '') + (c.instagram ? `\n${c.instagram}` : '');
+    (v.forma === 'Crédito' && v.parcelas > 1 ? ` em ${v.parcelas}x` : '') + (v.vendedor ? `\nAtendida por ${v.vendedor}` : '') + (c.rodape ? `\n\n${c.rodape}` : '') + (c.instagram ? `\n${c.instagram}` : '');
 }
 function abrirVenda(id, nova) {
   const v = S.vendas[id]; if (!v) return;
@@ -490,6 +527,8 @@ function abrirVenda(id, nova) {
     if (a === 'cancelar' && await confirmar(`Cancelar a venda ${v.numero} de ${money(v.total)}? As peças voltam para o estoque.`, { ok: 'Cancelar venda', perigo: true })) {
       v.cancelada = true;
       v.itens.forEach(i => { const p = S.produtos[i.produto_id]; if (p) p.qtd += i.qtd; });
+      // o cancelamento devolve a venda inteira; o que já tinha sido devolvido sai de novo para não contar duas vezes
+      devolucoesDe(v.id).forEach(d => { const p = S.produtos[d.produto_id]; if (p) { p.qtd -= d.delta; addAjuste(p.id, -d.delta, 'Correção: peça já devolvida antes do cancelamento', { tipo: 'ajuste', venda_id: v.id }); } });
       dirty('vendas', v.id); dlg.close(); renderDados(); toast('Venda cancelada. As peças voltaram ao estoque.', 'ok');
     }
   });
@@ -501,12 +540,12 @@ async function imprimir(html, page) {
 }
 
 // leitor pela câmera (BarcodeDetector)
-$('#btn-scan').addEventListener('click', abrirScanner);
-async function abrirScanner() {
+$('#btn-scan').addEventListener('click', () => abrirScanner(cod => { const p = porCodigo(cod); if (p) adicionar(p); else toast(`Código ${cod} não está cadastrado.`, 'warn'); }));
+async function abrirScanner(aoLer) {
   if (!('BarcodeDetector' in window)) return toast('Este navegador não lê códigos pela câmera. Use o Chrome no Android, o leitor USB ou digite o código.', 'warn');
   let det; try { det = new BarcodeDetector({ formats: ['qr_code', 'code_128', 'ean_13', 'code_39'] }); } catch { det = new BarcodeDetector(); }
   let stream, timer, ativo = true;
-  abrirDlg(`<div class="dlg-body scan"><header><h2>Ler etiqueta</h2><button class="x" type="button" data-close aria-label="Fechar">×</button></header><video playsinline muted></video><p class="muted" style="margin-top:10px">Aponte a câmera para o QR code da etiqueta.</p></div>`,
+  abrirDlg(`<div class="dlg-body scan"><header><h2>Ler etiqueta</h2><button class="x" type="button" data-close aria-label="Fechar">×</button></header><video playsinline muted></video><p class="muted" style="margin-top:10px">Aponte a câmera para o código de barras ou o QR code da etiqueta.</p></div>`,
     () => { ativo = false; clearTimeout(timer); stream && stream.getTracks().forEach(t => t.stop()); });
   const video = dlg.querySelector('video');
   try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }); } catch { dlg.close(); return toast('Sem acesso à câmera. Libere a permissão no navegador.', 'bad'); }
@@ -514,7 +553,7 @@ async function abrirScanner() {
   video.srcObject = stream; await video.play().catch(() => {});
   const ler = async () => {
     if (!ativo) return;
-    try { const r = await det.detect(video); if (r.length) { const cod = r[0].rawValue; dlg.close(); const p = porCodigo(cod); if (p) adicionar(p); else toast(`Código ${cod} não está cadastrado.`, 'warn'); return; } } catch {}
+    try { const r = await det.detect(video); if (r.length) { const cod = r[0].rawValue.trim(); dlg.close(); if (navigator.vibrate) navigator.vibrate(15); aoLer(cod); return; } } catch {}
     timer = setTimeout(ler, 250);
   };
   ler();
@@ -568,13 +607,14 @@ function abrirProduto(id) {
     </div>
     ${p ? '' : `<fieldset class="grade"><legend>Quantidade por tamanho</legend><div class="grade-cells">${tams.map(t => `<label class="gcell"><span>${esc(t)}</span><input type="number" min="0" inputmode="numeric" data-tam="${esc(t)}" placeholder="–" aria-label="Quantidade ${esc(t)}"></label>`).join('')}</div>
       <p class="muted" style="font-size:13px;margin-top:8px">Cada tamanho preenchido vira um item com código e etiqueta próprios.</p></fieldset>`}
-    <div class="dlg-foot">${p ? '<button class="btn danger" type="button" data-a="del">Excluir peça</button><button class="btn ghost" type="button" data-a="etq">Etiqueta</button>' : ''}<span class="grow"></span>
+    <div class="dlg-foot">${p ? '<button class="btn danger" type="button" data-a="del">Excluir peça</button><button class="btn ghost" type="button" data-a="etq">Etiqueta</button><button class="btn ghost" type="button" data-a="dev">Registrar devolução</button>' : ''}<span class="grow"></span>
       <button class="btn ghost" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">${p ? 'Salvar alterações' : 'Cadastrar peça'}</button></div></form>`);
   const f = $('#fp');
   if (!p) setTimeout(() => f.tipo.focus(), 30);
   f.addEventListener('click', async e => {
     const a = e.target.closest('[data-a]')?.dataset.a;
     if (a === 'etq') { dlg.close(); abrirEtiquetas([p.id]); }
+    if (a === 'dev') { dlg.close(); abrirDevolucao(p.id); }
     if (a === 'del' && await confirmar(`Excluir ${nomeP(p)} ${p.tamanho} ${p.cor}? O histórico de vendas continua guardado.`, { ok: 'Excluir peça', perigo: true })) {
       p.deleted = true; dirty('produtos', p.id); dlg.close(); renderDados(); toast('Peça excluída.', 'ok');
     }
@@ -607,7 +647,17 @@ function abrirProduto(id) {
   });
 }
 
-// etiquetas com QR code
+// etiquetas com código de barras (Code 128) e o código escrito embaixo; QR code como alternativa
+const C128 = ['212222','222122','222221','121223','121322','131222','122213','122312','132212','221213','221312','231212','112232','122132','122231','113222','123122','123221','223211','221132','221231','213212','223112','312131','311222','321122','321221','312212','322112','322211','212123','212321','232121','111323','131123','131321','112313','132113','132311','211313','231113','231311','112133','112331','132131','113123','113321','133121','313121','211331','231131','213113','213311','213131','311123','311321','331121','312113','312311','332111','314111','221411','431111','111224','111422','121124','121421','141122','141221','112214','112412','122114','122411','142112','142211','241211','221114','413111','241112','134111','111242','121142','121241','114212','124112','124211','411212','421112','421211','212141','214121','412121','111143','111341','131141','114113','114311','411113','411311','113141','114131','311141','411131','211412','211214','211232','2331112'];
+// desenha o código em SVG vetorial: fica nítido em qualquer impressora e é lido por leitor USB, Bluetooth ou câmera
+function barrasSVG(txt) {
+  txt = String(txt).replace(/[^\x20-\x7e]/g, '');
+  const v = [104, ...[...txt].map(c => c.charCodeAt(0) - 32)];
+  let ck = 104; v.slice(1).forEach((x, i) => ck += x * (i + 1)); v.push(ck % 103, 106);
+  const Q = 10; let x = Q, rects = '', bar = true;
+  v.forEach(c => [...C128[c]].forEach(w => { w = +w; if (bar) rects += `<rect x="${x}" width="${w}" height="40"/>`; x += w; bar = !bar; }));
+  return `<svg class="barras" viewBox="0 0 ${x + Q} 40" preserveAspectRatio="none" shape-rendering="crispEdges" role="img" aria-label="Código de barras ${esc(txt)}"><rect width="${x + Q}" height="40" fill="#fff"/><g fill="#000">${rects}</g></svg>`;
+}
 let qrPromessa;
 function carregarQR() {
   if (window.QRCode) return Promise.resolve();
@@ -621,42 +671,225 @@ function qrImg(txt) {
   new QRCode(d, { text: txt, width: 256, height: 256, correctLevel: QRCode.CorrectLevel.M });
   const c = d.querySelector('canvas'); return c ? c.toDataURL('image/png') : d.querySelector('img')?.src;
 }
+function etqHTML(p, modo, qr) {
+  const topo = `<div class="et-top"><span class="eb">${esc(cfg().nome)}</span><span class="ep">${money(p.preco)}</span></div>
+    <div class="et-nome">${esc(nomeP(p))}</div><div class="et-var">Tam. ${esc(p.tamanho)}, ${esc(p.cor)}</div>`;
+  if (modo === 'qr') return `<div class="etq qr">${qr ? `<img src="${qr}" alt="">` : ''}<div class="et-col">${topo}<span class="ec">${esc(p.codigo)}</span></div></div>`;
+  return `<div class="etq">${topo}<div class="et-bar">${barrasSVG(p.codigo)}</div><div class="ec">${esc(p.codigo)}</div></div>`;
+}
 function abrirEtiquetas(ids) {
   const ps = ids.map(id => S.produtos[id]).filter(p => p && !p.deleted); if (!ps.length) return;
   abrirDlg(`<form class="dlg-body" id="fe"><header><h2>Imprimir etiquetas</h2><button class="x" type="button" data-close aria-label="Fechar">×</button></header>
-    <label style="margin-bottom:14px">Formato<select name="fmt"><option value="rolo">Impressora de etiquetas (50 × 30 mm)</option><option value="a4">Folha A4 comum (várias por folha)</option></select></label>
-    <ul class="mini">${ps.map(p => `<li><div class="grow"><strong>${esc(nomeP(p))}</strong><span class="meta"><span>${esc(p.tamanho)}</span><span>${esc(p.cor)}</span><span>${money(p.preco)}</span></span></div>
+    <div class="fgrid" style="margin-bottom:14px">
+      <label class="span2">Formato<select name="fmt"><option value="rolo">Impressora de etiquetas (50 × 30 mm)</option><option value="a4">Folha A4 comum (várias por folha)</option></select></label>
+      <label>Código na etiqueta<select name="modo"><option value="barras">Código de barras</option><option value="qr">QR code</option></select></label>
+    </div>
+    <div class="etq-prev" id="etq-prev" aria-label="Prévia da etiqueta"></div>
+    <ul class="mini">${ps.map(p => `<li><div class="grow"><strong>${esc(nomeP(p))}</strong><span class="meta"><span>${esc(p.tamanho)}</span><span>${esc(p.cor)}</span><span>${money(p.preco)}</span><span class="code">${esc(p.codigo)}</span></span></div>
       <label style="width:90px">Cópias<input type="number" min="0" max="200" inputmode="numeric" data-cop="${p.id}" value="${Math.min(Math.max(p.qtd, 1), 50)}"></label></li>`).join('')}</ul>
     <div class="dlg-foot"><span class="grow"></span><button class="btn ghost" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Imprimir</button></div></form>`);
-  $('#fe').fmt.value = localStorage.getItem('prd-etq-fmt') || 'rolo';
-  $('#fe').addEventListener('submit', async e => {
-    e.preventDefault(); const fmt = e.target.fmt.value; localStorage.setItem('prd-etq-fmt', fmt);
-    const lista = []; $$('[data-cop]', e.target).forEach(i => { const p = S.produtos[i.dataset.cop]; for (let k = 0; k < Math.min(200, +i.value || 0); k++) lista.push(p); });
+  const f = $('#fe');
+  f.fmt.value = localStorage.getItem('prd-etq-fmt') || 'rolo';
+  f.modo.value = localStorage.getItem('prd-etq-modo') || 'barras';
+  const prev = async () => {
+    let qr = null; if (f.modo.value === 'qr') { try { await carregarQR(); qr = qrImg(ps[0].codigo); } catch {} }
+    $('#etq-prev').innerHTML = `<div class="etqs ${f.fmt.value}">${etqHTML(ps[0], f.modo.value, qr)}</div>`;
+  };
+  f.fmt.addEventListener('change', prev); f.modo.addEventListener('change', prev); prev();
+  f.addEventListener('submit', async e => {
+    e.preventDefault(); const fmt = f.fmt.value, modo = f.modo.value;
+    localStorage.setItem('prd-etq-fmt', fmt); localStorage.setItem('prd-etq-modo', modo);
+    const lista = []; $$('[data-cop]', f).forEach(i => { const p = S.produtos[i.dataset.cop]; for (let k = 0; k < Math.min(200, +i.value || 0); k++) lista.push(p); });
     if (!lista.length) return toast('Informe ao menos uma cópia.', 'warn');
-    let temQR = true; try { await carregarQR(); } catch { temQR = false; toast('Não foi possível gerar o QR code. As etiquetas saem só com o código.', 'warn'); }
+    let temQR = modo === 'qr';
+    if (temQR) { try { await carregarQR(); } catch { temQR = false; toast('Não foi possível gerar o QR code. As etiquetas saem só com o código escrito.', 'warn'); } }
     const cache = {}; const img = c => temQR ? (cache[c] ||= qrImg(c)) : null;
-    const html = `<div class="etqs ${fmt}">${lista.map(p => `<div class="etq">${img(p.codigo) ? `<img src="${img(p.codigo)}" alt="">` : `<div class="noqr">${esc(p.codigo)}</div>`}
-      <div><span class="eb">${esc(cfg().nome)}</span><span>${esc(nomeP(p))}</span><span>${esc(p.tamanho)} ${esc(p.cor)}</span><span class="ep">${money(p.preco)}</span><span class="ec">${esc(p.codigo)}</span></div></div>`).join('')}</div>`;
+    const html = `<div class="etqs ${fmt}">${lista.map(p => etqHTML(p, modo, img(p.codigo))).join('')}</div>`;
     dlg.close();
     imprimir(html, fmt === 'rolo' ? 'size:50mm 30mm;margin:0' : 'size:A4;margin:8mm');
   });
 }
 
+// ---------- ESTOQUE: consulta, movimentações e devoluções ----------
+const porCodigoTodos = c => { c = String(c || '').trim().toUpperCase(); return c ? Object.values(S.produtos).find(p => String(p.codigo).toUpperCase() === c) || null : null; };
+const nomeMov = m => { const p = S.produtos[m.produto_id]; return p ? `${nomeP(p)} ${p.tamanho}` : 'Peça'; };
+const devolucoesDe = vid => Object.values(S.movs).filter(m => m.venda_id === vid && tipoMov(m) === 'devolucao');
+const devolvido = (vid, pid) => sum(devolucoesDe(vid).filter(m => m.produto_id === pid).map(m => m.delta));
+const itemDe = (v, p) => v.itens.find(i => i.produto_id === p.id || (!i.produto_id && String(i.codigo).toUpperCase() === String(p.codigo).toUpperCase()));
+const pagoItem = (v, i, q = i.qtd) => r2(i.preco * q * (v.subtotal > 0 ? v.total / v.subtotal : 1));   // já com o desconto da venda
+const vendasDaPeca = p => Object.values(S.vendas).filter(v => itemDe(v, p)).sort((a, b) => b.data.localeCompare(a.data));
+
+let consCod = '';
+const consBusca = $('#cons-busca');
+function consultar(cod) {
+  consCod = String(cod || '').trim(); consBusca.value = consCod;
+  if (vista !== 'estoque') ir('estoque'); else rConsulta();
+  $('#cons-res').scrollIntoView({ block: 'nearest' });
+}
+consBusca.addEventListener('input', debounce(() => { consCod = consBusca.value.trim(); rConsulta(); }, 150));
+consBusca.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); consCod = consBusca.value.trim(); rConsulta(); consBusca.select(); } if (e.key === 'Escape') { consBusca.value = consCod = ''; rConsulta(); } });
+$('#btn-scan-cons').addEventListener('click', () => abrirScanner(consultar));
+$('#btn-consulta').addEventListener('click', () => { ir('estoque'); setTimeout(() => { consBusca.focus(); consBusca.select(); }, 60); });
+
+function rConsulta() {
+  const el = $('#cons-res'), q = consCod;
+  if (!q) { el.innerHTML = '<p class="muted cons-dica">Mostra o preço, quanto há em estoque e, se a peça já foi vendida, quando, para quem e por quanto.</p>'; return; }
+  const p = porCodigoTodos(q);
+  if (p) { el.innerHTML = cartaoPeca(p); return; }
+  // peça que só existe no histórico de vendas (sistema anterior)
+  const vs = Object.values(S.vendas).filter(v => v.itens.some(i => String(i.codigo).toUpperCase() === q.toUpperCase()));
+  if (vs.length) { const i = vs[0].itens.find(i => String(i.codigo).toUpperCase() === q.toUpperCase()); el.innerHTML = cartaoPeca({ id: null, codigo: i.codigo, tipo: '', descricao: i.nome, tamanho: i.tamanho, cor: i.cor, preco: i.preco, qtd: 0, deleted: true, avulsa: true }); return; }
+  const ls = buscarProdutos(q, 8);
+  el.innerHTML = ls.length
+    ? `<p class="muted cons-dica">Nenhum código igual a “${esc(q)}”. Peças parecidas:</p><ul class="mini cons-lista">${ls.map(p => `<li><button class="grow" type="button" data-cons="${esc(p.codigo)}"><strong>${esc(nomeP(p))}</strong><span class="meta"><span>${esc(p.tamanho)}</span><span>${esc(p.cor)}</span><span class="code">${esc(p.codigo)}</span></span></button><b class="num">${money(p.preco)}</b></li>`).join('')}</ul>`
+    : `<p class="cons-dica"><strong>Nenhuma peça com o código “${esc(q)}”.</strong> <span class="muted">Confira o código ou cadastre a peça em Produtos.</span></p>`;
+}
+function cartaoPeca(p) {
+  const vs = p.avulsa ? Object.values(S.vendas).filter(v => v.itens.some(i => String(i.codigo).toUpperCase() === String(p.codigo).toUpperCase())).sort((a, b) => b.data.localeCompare(a.data)) : vendasDaPeca(p);
+  const movs = p.id ? Object.values(S.movs).filter(m => m.produto_id === p.id).sort((a, b) => b.created_at.localeCompare(a.created_at)) : [];
+  const status = p.avulsa ? '<span class="tag">só no histórico</span>' : p.deleted ? '<span class="tag bad">excluída do cadastro</span>' : p.qtd <= 0 ? '<span class="tag bad">esgotada</span>' : `<span class="tag ${p.qtd <= (p.estoque_min || 0) ? 'warn' : 'ok'}">${p.qtd} em estoque</span>`;
+  const vendidas = sum(vs.filter(v => !v.cancelada).map(v => { const i = itemDe(v, p) || v.itens.find(i => i.codigo === p.codigo); return i ? i.qtd : 0; }));
+  return `<div class="cons-card">
+    <div class="cons-head">
+      <div class="grow"><strong class="cons-nome">${esc(nomeP(p))}</strong>
+        <span class="meta">${p.tipo ? `<span>${esc(p.tipo)}</span>` : ''}<span>Tam. <b>${esc(p.tamanho)}</b></span><span>${esc(p.cor)}</span><span class="code">${esc(p.codigo)}</span></span>
+        <div class="cons-status">${status}${vendidas ? `<span class="muted">${vendidas} ${vendidas === 1 ? 'vendida' : 'vendidas'} até hoje</span>` : ''}${p.created_at ? `<span class="muted">cadastrada em ${new Date(p.created_at).toLocaleDateString('pt-BR')}</span>` : ''}</div></div>
+      <div class="cons-preco">${money(p.preco)}</div>
+    </div>
+    ${p.avulsa ? '' : `<div class="btns">
+      ${!p.deleted && p.qtd > 0 ? `<button class="btn primary sm" type="button" data-addcart="${p.id}">Adicionar à venda</button>` : ''}
+      <button class="btn ghost sm" type="button" data-dev="${p.id}">Registrar devolução</button>
+      ${p.deleted ? '' : `<button class="btn ghost sm" type="button" data-edit="${p.id}">Editar</button><button class="btn ghost sm" type="button" data-etq="${p.id}">Etiqueta</button>`}</div>`}
+    <h3 class="cons-h">${vs.length ? 'Vendas desta peça' : 'Ainda não foi vendida'}</h3>
+    ${vs.length ? `<ul class="cons-vendas">${vs.map(v => { const i = (p.avulsa ? null : itemDe(v, p)) || v.itens.find(x => x.codigo === p.codigo); const dv = p.id ? devolvido(v.id, p.id) : 0; const pago = pagoItem(v, i);
+      return `<li class="${v.cancelada ? 'cancel' : ''}">
+        <button class="grow" type="button" data-venda="${v.id}">
+          <strong>${fmtDT(v.data)}</strong>
+          <span class="meta"><span>Cliente: ${esc(v.cliente_nome || 'não informada')}</span><span>Vendedora: ${esc(v.vendedor || 'não informada')}</span><span>${esc(v.forma)}${v.parcelas > 1 ? ' ' + v.parcelas + 'x' : ''}</span><span class="code">Venda ${esc(v.numero)}</span></span>
+          ${v.cancelada ? '<span class="tag bad">venda cancelada</span>' : ''}${dv ? `<span class="tag warn">${dv} ${dv === 1 ? 'devolvida' : 'devolvidas'}</span>` : ''}
+        </button>
+        <div class="cons-v"><b class="num">${money(pago)}</b><small class="muted">${i.qtd}× ${money(i.preco)}${pago < r2(i.preco * i.qtd) ? ', com desconto' : ''}</small>
+          ${!v.cancelada && p.id && dv < i.qtd ? `<button class="link" type="button" data-dev="${p.id}|${v.id}">Devolver</button>` : ''}</div></li>`; }).join('')}</ul>` : ''}
+    ${movs.length ? `<h3 class="cons-h">Entradas e ajustes</h3><ul class="cons-movs">${movs.slice(0, 12).map(m => `<li><span>${fmtDT(m.created_at)}</span><span>${esc(NOME_MOV[tipoMov(m)])}${m.cliente ? ', ' + esc(m.cliente) : ''}${m.motivo && !['Cadastro', 'Ajuste manual'].includes(m.motivo) ? ` <span class="muted">(${esc(m.motivo)})</span>` : ''}</span><b class="num ${m.delta > 0 ? 'mais' : 'menos'}">${m.delta > 0 ? '+' : '−'}${Math.abs(m.delta)}</b></li>`).join('')}</ul>` : ''}
+  </div>`;
+}
+
+function abrirDevolucao(pid, vid) {
+  const p = S.produtos[pid]; if (!p) return;
+  const vs = vendasDaPeca(p).filter(v => !v.cancelada).map(v => { const i = itemDe(v, p); return { v, i, rest: i.qtd - devolvido(v.id, p.id) }; }).filter(x => x.rest > 0);
+  const ini = vs.find(x => x.v.id === vid) || (vid === undefined ? vs[0] : null);
+  abrirDlg(`<form class="dlg-body" id="fdev" novalidate><header><h2>Registrar devolução</h2><button class="x" type="button" data-close aria-label="Fechar">×</button></header>
+    <p style="margin-bottom:14px"><strong>${esc(nomeP(p))}</strong> <span class="muted">Tam. ${esc(p.tamanho)}, ${esc(p.cor)}, ${esc(p.codigo)}</span><br><span class="muted">A peça volta para o estoque${p.deleted ? ' e para o cadastro' : ''}.</span></p>
+    <div class="fgrid">
+      <label class="span2" style="grid-column:1/-1">Venda de origem<select name="venda">
+        ${vs.map(x => `<option value="${x.v.id}" ${x === ini ? 'selected' : ''}>${new Date(x.v.data).toLocaleDateString('pt-BR')}, ${esc(x.v.cliente_nome || 'cliente não informada')}, ${money(pagoItem(x.v, x.i, 1))} un${x.v.vendedor ? ', ' + esc(x.v.vendedor) : ''}</option>`).join('')}
+        <option value="" ${ini ? '' : 'selected'}>Sem venda registrada</option></select></label>
+      <label>Quantidade<input name="qtd" type="number" min="1" inputmode="numeric" value="1"></label>
+      <label>Motivo<select name="motivo">${['Troca', 'Não serviu', 'Defeito', 'Desistência', 'Outro'].map(m => `<option>${m}</option>`).join('')}</select></label>
+      <label>Cliente<input name="cliente" list="dl-clientes" autocomplete="off" value="${esc(ini?.v.cliente_nome || '')}"></label>
+      <label>Recebida por<input name="vendedor" list="dl-vend" autocomplete="off" value="${esc(vendedorAtual())}"></label>
+      <label class="span2" style="grid-column:1/-1">Observação<input name="obs" autocomplete="off" placeholder="Opcional, ex.: trocou pelo tamanho G"></label>
+    </div>
+    <datalist id="dl-vend">${vendedoras().map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <p class="muted" id="dev-info" style="font-size:13.5px;margin-top:12px"></p>
+    <div class="dlg-foot"><span class="grow"></span><button class="btn ghost" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Devolver ao estoque</button></div></form>`);
+  const f = $('#fdev');
+  const sel = () => vs.find(x => x.v.id === f.venda.value);
+  const info = () => { const x = sel(), q = Math.max(1, Math.trunc(+f.qtd.value || 1));
+    f.qtd.max = x ? x.rest : 999;
+    $('#dev-info').textContent = x ? `Vendida em ${fmtDT(x.v.data)}. Valor a devolver: ${money(pagoItem(x.v, x.i, Math.min(q, x.rest)))}.${x.rest < x.i.qtd ? ` Já ${x.i.qtd - x.rest === 1 ? 'foi devolvida 1' : 'foram devolvidas ' + (x.i.qtd - x.rest)} desta venda.` : ''}` : `Sem venda de origem, o valor considerado é o preço atual: ${money(p.preco * q)}.`; };
+  f.venda.addEventListener('change', () => { const x = sel(); if (x) f.cliente.value = x.v.cliente_nome || ''; info(); });
+  f.qtd.addEventListener('input', info); info();
+  f.addEventListener('submit', e => {
+    e.preventDefault(); const x = sel(), q = Math.trunc(+f.qtd.value || 0);
+    if (q < 1) return toast('Informe a quantidade devolvida.', 'warn'), f.qtd.focus();
+    if (x && q > x.rest) return toast(`Nesta venda só ${x.rest === 1 ? 'resta 1 peça' : `restam ${x.rest} peças`} para devolver.`, 'warn'), f.qtd.focus();
+    const obs = f.obs.value.trim();
+    if (p.deleted) { p.deleted = false; dirty('produtos', p.id); }
+    p.qtd += q;
+    addAjuste(p.id, q, f.motivo.value + (obs ? ': ' + obs : ''), { tipo: 'devolucao', venda_id: x ? x.v.id : null, cliente: f.cliente.value.trim() || null, vendedor: f.vendedor.value.trim() || null, valor: x ? pagoItem(x.v, x.i, q) : r2(p.preco * q) });
+    salvarJa(); dlg.close(); renderDados();
+    toast(q === 1 ? 'Devolução registrada. A peça voltou ao estoque.' : `Devolução registrada. ${q} peças voltaram ao estoque.`, 'ok');
+  });
+}
+
+// movimentações do período: entradas e ajustes (S.movs) + saídas por venda
+let mPer = '30', mLimite = 300;
+const sinal = (n, d) => n ? (d > 0 ? '+' : '−') + n : '0';
+function movimentos() {
+  const [a, b] = intervalo(mPer, '#m-de', '#m-ate'), dentro = iso => { const d = new Date(iso); return d >= a && d <= b; };
+  const ls = [];
+  Object.values(S.movs).forEach(m => { if (!dentro(m.created_at)) return; const p = S.produtos[m.produto_id];
+    ls.push({ id: m.id, data: m.created_at, tipo: tipoMov(m), qtd: m.delta, nome: p ? nomeP(p) : 'Peça', tamanho: p?.tamanho || '', cor: p?.cor || '', codigo: p?.codigo || '',
+      valor: m.valor ?? (p ? r2(p.preco * Math.abs(m.delta)) : 0), cliente: m.cliente, vendedor: m.vendedor, venda_id: m.venda_id, obs: m.motivo }); });
+  Object.values(S.vendas).forEach(v => { if (!dentro(v.data)) return;
+    v.itens.forEach(i => ls.push({ id: v.id + i.codigo, data: v.data, tipo: 'venda', qtd: -i.qtd, nome: i.nome, tamanho: i.tamanho, cor: i.cor, codigo: i.codigo,
+      valor: pagoItem(v, i), cliente: v.cliente_nome, vendedor: v.vendedor, venda_id: v.id, cancelada: v.cancelada, numero: v.numero })); });
+  return ls.sort((x, y) => y.data.localeCompare(x.data));
+}
+function rEstoque() {
+  rConsulta();
+  const todos = movimentos(), ft = $('#m-tipo').value;
+  const lista = todos.filter(m => !ft || (ft === 'e' ? m.qtd > 0 : ft === 's' ? m.qtd < 0 : m.tipo === ft));
+  const conta = m => !m.cancelada && m.tipo !== 'carga';
+  const ent = todos.filter(m => conta(m) && m.qtd > 0 && m.tipo !== 'devolucao'), dev = todos.filter(m => m.tipo === 'devolucao');
+  const ven = todos.filter(m => conta(m) && m.tipo === 'venda'), bx = todos.filter(m => conta(m) && m.qtd < 0 && m.tipo !== 'venda');
+  const q = a => sum(a.map(m => Math.abs(m.qtd)));
+  const prods = ativos(), pcs = sum(prods.map(p => Math.max(0, p.qtd)));
+  const porTipo = {}; prods.forEach(p => { const k = p.tipo || 'Sem tipo'; const t = porTipo[k] ||= { itens: 0, pcs: 0, venda: 0, custo: 0, semCusto: 0 }; const n = Math.max(0, p.qtd);
+    t.itens++; t.pcs += n; t.venda += n * p.preco; if (p.custo != null) t.custo += n * p.custo; else if (n) t.semCusto++; });
+  const tipos = Object.entries(porTipo).sort((x, y) => y[1].pcs - x[1].pcs), temCusto = prods.some(p => p.custo != null);
+  const grupos = []; lista.slice(0, mLimite).forEach(m => { const k = dayKey(new Date(m.data)); const g = grupos[grupos.length - 1]; if (g && g.k === k) g.ls.push(m); else grupos.push({ k, d: m.data, ls: [m] }); });
+  $('#mres').innerHTML = `
+    <div class="kpis">
+      <div class="kpi"><span>Entraram</span><strong class="mais">${sinal(q(ent), 1)}</strong><small class="muted">cadastros e ajustes</small></div>
+      <div class="kpi"><span>Devolvidas</span><strong class="mais">${sinal(q(dev), 1)}</strong><small class="muted">${money(sum(dev.map(m => m.valor)))}</small></div>
+      <div class="kpi"><span>Vendidas</span><strong class="menos">${sinal(q(ven), -1)}</strong><small class="muted">${money(sum(ven.map(m => m.valor)))}</small></div>
+      ${bx.length ? `<div class="kpi"><span>Baixas manuais</span><strong class="menos">${sinal(q(bx), -1)}</strong></div>` : ''}
+      <div class="kpi main"><span>Em estoque agora</span><strong>${pcs} ${pcs === 1 ? 'peça' : 'peças'}</strong><small>${money(sum(prods.map(p => Math.max(0, p.qtd) * p.preco)))} a preço de venda</small></div>
+    </div>
+    ${tipos.length ? `<section class="panel" style="margin-bottom:16px"><h2>Estoque por tipo</h2><div class="tscroll"><table class="ttab">
+      <thead><tr><th>Tipo</th><th>Itens</th><th>Peças</th><th>Valor de venda</th>${temCusto ? '<th>Custo</th>' : ''}</tr></thead>
+      <tbody>${tipos.map(([k, t]) => `<tr><td>${esc(k)}</td><td>${t.itens}</td><td>${t.pcs}</td><td>${money(t.venda)}</td>${temCusto ? `<td>${money(t.custo)}${t.semCusto ? '<small class="muted"> parcial</small>' : ''}</td>` : ''}</tr>`).join('')}</tbody>
+      <tfoot><tr><td>Total</td><td>${prods.length}</td><td>${pcs}</td><td>${money(sum(tipos.map(t => t[1].venda)))}</td>${temCusto ? `<td>${money(sum(tipos.map(t => t[1].custo)))}</td>` : ''}</tr></tfoot></table></div></section>` : ''}
+    <h2>${lista.length ? `${lista.length} ${lista.length === 1 ? 'movimentação' : 'movimentações'} no período` : ''}</h2>
+    ${lista.length ? grupos.map(g => `<p class="mgrupo">${(d => d[0].toUpperCase() + d.slice(1))(new Date(g.d).toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }))}</p>
+      <div class="vlist">${g.ls.map(m => `<button class="mrow ${m.cancelada ? 'cancel' : ''}" type="button" ${m.tipo === 'venda' ? `data-venda="${m.venda_id}"` : `data-cons="${esc(m.codigo)}"`}>
+        <span class="mtag t-${m.tipo}">${NOME_MOV[m.tipo]}</span>
+        <span class="minfo"><strong>${esc(m.nome)}</strong><span class="meta"><span>${fmtHora(m.data)}</span><span>${esc(m.tamanho)}</span><span>${esc(m.cor)}</span><span class="code">${esc(m.codigo)}</span>${m.cliente ? `<span>${esc(m.cliente)}</span>` : ''}${m.vendedor ? `<span>${esc(m.vendedor)}</span>` : ''}${m.cancelada ? '<span class="tag bad">cancelada</span>' : ''}</span></span>
+        <b class="mq ${m.qtd > 0 ? 'mais' : 'menos'}">${m.qtd > 0 ? '+' : '−'}${Math.abs(m.qtd)}</b>
+        <span class="mv">${m.valor ? money(m.valor) : ''}</span></button>`).join('')}</div>`).join('')
+      + (lista.length > mLimite ? `<div class="btns" style="justify-content:center"><button class="btn ghost" type="button" data-act="mais-mov">Mostrar mais</button></div>` : '')
+      : `<div class="empty panel"><strong>Nenhuma movimentação neste período</strong>Cadastros, vendas, devoluções e ajustes de estoque aparecem aqui.</div>`}`;
+}
+$('#m-per').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return; mPer = b.dataset.v; mLimite = 300;
+  $$('#m-per button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  $('#m-de').hidden = $('#m-ate').hidden = mPer !== 'per';
+  if (mPer === 'per' && !$('#m-de').value) { const h = new Date(); $('#m-de').value = dayKey(new Date(h.getFullYear(), h.getMonth(), 1)); $('#m-ate').value = dayKey(h); }
+  rEstoque();
+});
+['m-de', 'm-ate', 'm-tipo'].forEach(id => $('#' + id).addEventListener('change', () => { mLimite = 300; rEstoque(); }));
+function csvMov() {
+  return csv([['Data', 'Hora', 'Movimento', 'Código', 'Peça', 'Tamanho', 'Cor', 'Quantidade', 'Valor', 'Cliente', 'Vendedora', 'Venda', 'Observação'],
+    ...movimentos().map(m => [new Date(m.data).toLocaleDateString('pt-BR'), fmtHora(m.data), NOME_MOV[m.tipo] + (m.cancelada ? ' (cancelada)' : ''), m.codigo, m.nome, m.tamanho, m.cor, m.qtd, m.valor ? n2(m.valor) : '', m.cliente, m.vendedor, m.numero || (m.venda_id && S.vendas[m.venda_id]?.numero) || '', m.tipo === 'venda' ? '' : m.obs])]);
+}
+
 // ---------- VENDAS (relatório) ----------
 let per = 'hoje';
-function intervalo() {
-  const h = new Date(), fim = new Date(h.getFullYear(), h.getMonth(), h.getDate(), 23, 59, 59, 999);
+function intervalo(pp = per, deSel = '#per-de', ateSel = '#per-ate') {
+  const per = pp, h = new Date(), fim = new Date(h.getFullYear(), h.getMonth(), h.getDate(), 23, 59, 59, 999);
   const ini = d => new Date(h.getFullYear(), h.getMonth(), h.getDate() - d);
   if (per === 'hoje') return [ini(0), fim];
   if (per === '7') return [ini(6), fim];
   if (per === '30') return [ini(29), fim];
   if (per === 'mes') return [new Date(h.getFullYear(), h.getMonth(), 1), fim];
-  const de = $('#per-de').value, ate = $('#per-ate').value;
+  const de = $(deSel).value, ate = $(ateSel).value;
   return [de ? new Date(de + 'T00:00:00') : new Date(2000, 0, 1), ate ? new Date(ate + 'T23:59:59.999') : fim];
 }
 function vendasFiltradas(incluiCanc) {
-  const [a, b] = intervalo(), f = $('#per-forma').value;
-  return Object.values(S.vendas).filter(v => { const d = new Date(v.data); return d >= a && d <= b && (!f || v.forma === f) && (incluiCanc || !v.cancelada); })
+  const [a, b] = intervalo(), f = $('#per-forma').value, fv = $('#per-vend').value;
+  return Object.values(S.vendas).filter(v => { const d = new Date(v.data); return d >= a && d <= b && (!f || v.forma === f) && (!fv || (fv === '-' ? !v.vendedor : v.vendedor === fv)) && (incluiCanc || !v.cancelada); })
     .sort((x, y) => y.data.localeCompare(x.data));
 }
 function rVendas() {
@@ -678,6 +911,10 @@ function rVendas() {
   const top = {}; vs.forEach(v => v.itens.forEach(i => { const k = i.nome; top[k] = top[k] || { q: 0, t: 0 }; top[k].q += i.qtd; top[k].t += i.preco * i.qtd; }));
   const topL = Object.entries(top).sort((x, y) => y[1].q - x[1].q || y[1].t - x[1].t).slice(0, 6), topMax = Math.max(1, ...topL.map(t => t[1].q));
   const nc = todas.length - vs.length;
+  const porVend = {}; vs.forEach(v => { const k = v.vendedor || 'Sem vendedora'; porVend[k] = porVend[k] || { n: 0, t: 0 }; porVend[k].n++; porVend[k].t += v.total; });
+  const [da, db] = intervalo(); const ids = new Set(vs.map(v => v.id));
+  const devs = Object.values(S.movs).filter(m => tipoMov(m) === 'devolucao' && (() => { const d = new Date(m.created_at); return d >= da && d <= db; })() && (!$('#per-vend').value && !$('#per-forma').value || ids.has(m.venda_id)));
+  const devT = sum(devs.map(m => m.valor));
   $('#vres').innerHTML = `
     <div class="kpis">
       <div class="kpi main"><span>Faturamento</span><strong>${money(fat)}</strong></div>
@@ -686,18 +923,21 @@ function rVendas() {
       <div class="kpi"><span>Peças vendidas</span><strong>${pcs}</strong></div>
       <div class="kpi"><span>Descontos dados</span><strong>${money(desc)}</strong></div>
       ${comCusto.length ? `<div class="kpi"><span>Lucro estimado</span><strong>${money(lucro)}</strong></div>` : ''}
+      ${devs.length ? `<div class="kpi"><span>Devoluções</span><strong>${money(devT)}</strong><small class="muted">${sum(devs.map(m => m.delta))} ${sum(devs.map(m => m.delta)) === 1 ? 'peça' : 'peças'}</small></div>` : ''}
     </div>
     ${vs.length ? `<div class="charts">
       <section class="panel"><h2>${porHora ? 'Vendas por hora' : serie.length && serie[0].k.length === 7 ? 'Vendas por mês' : 'Vendas por dia'}</h2>
         <div class="bars">${serie.map(s => `<div class="bar ${s.v ? '' : 'zero'}" title="${esc(s.k)}: ${money(s.v)}"><i style="height:${Math.max(1, s.v / max * 100)}%"></i><small>${esc(s.l)}</small></div>`).join('')}</div></section>
-      <section class="panel"><h2>Por forma de pagamento</h2>
+      <section class="panel"><h2>Por vendedora</h2>
+        <ul class="hbars">${Object.entries(porVend).sort((x, y) => y[1].t - x[1].t).map(([n, d]) => `<li><span>${esc(n)} <span class="muted">${d.n} ${d.n === 1 ? 'venda' : 'vendas'}</span></span><b>${money(d.t)}</b><div><i style="width:${fat ? d.t / fat * 100 : 0}%;background:var(--gold)"></i></div></li>`).join('')}</ul>
+        <h2 style="margin-top:22px">Por forma de pagamento</h2>
         <ul class="hbars">${Object.entries(formas).sort((x, y) => y[1] - x[1]).map(([f, v]) => `<li><span>${esc(f)} <span class="muted">${Math.round(v / fat * 100)}%</span></span><b>${money(v)}</b><div><i style="width:${v / fat * 100}%"></i></div></li>`).join('')}</ul>
         <h2 style="margin-top:22px">Mais vendidas</h2>
         <ul class="hbars">${topL.map(([n, t]) => `<li><span>${esc(n)}</span><b>${t.q} un</b><div><i style="width:${t.q / topMax * 100}%;background:var(--gold)"></i></div></li>`).join('')}</ul>
       </section></div>` : ''}
     <h2 style="margin-top:6px">${todas.length ? `${todas.length} ${todas.length === 1 ? 'venda' : 'vendas'} no período${nc ? `, ${nc} ${nc === 1 ? 'cancelada' : 'canceladas'}` : ''}` : ''}</h2>
     ${todas.length ? `<div class="vlist">${todas.slice(0, 500).map(v => `<button class="vrow ${v.cancelada ? 'cancel' : ''}" type="button" data-venda="${v.id}">
-        <span><strong>${esc(v.cliente_nome || resumoItens(v))}</strong><span class="meta"><span>${fmtDT(v.data)}</span><span>${sum(v.itens.map(i => i.qtd))} ${sum(v.itens.map(i => i.qtd)) === 1 ? 'peça' : 'peças'}</span><span class="code">${esc(v.numero)}</span></span></span>
+        <span><strong>${esc(v.cliente_nome || resumoItens(v))}</strong><span class="meta"><span>${fmtDT(v.data)}</span><span>${sum(v.itens.map(i => i.qtd))} ${sum(v.itens.map(i => i.qtd)) === 1 ? 'peça' : 'peças'}</span>${v.vendedor ? `<span>${esc(v.vendedor)}</span>` : ''}<span class="code">${esc(v.numero)}</span></span></span>
         <span>${v.cancelada ? '<span class="tag bad">cancelada</span>' : `<span class="tag">${esc(v.forma)}${v.parcelas > 1 ? ' ' + v.parcelas + 'x' : ''}</span>`}</span>
         <span class="vt">${money(v.total)}</span></button>`).join('')}</div>`
       : `<div class="empty panel"><strong>Nenhuma venda neste período</strong>Escolha outro período ou registre uma venda na tela Vender.</div>`}`;
@@ -709,12 +949,12 @@ $('#per').addEventListener('click', e => {
   if (per === 'per' && !$('#per-de').value) { const h = new Date(); $('#per-de').value = dayKey(new Date(h.getFullYear(), h.getMonth(), 1)); $('#per-ate').value = dayKey(h); }
   rVendas();
 });
-['per-de', 'per-ate', 'per-forma'].forEach(id => $('#' + id).addEventListener('change', rVendas));
+['per-de', 'per-ate', 'per-forma', 'per-vend'].forEach(id => $('#' + id).addEventListener('change', rVendas));
 function csv(linhas) { return '\ufeff' + linhas.map(l => l.map(c => { const s = String(c ?? ''); return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(';')).join('\r\n'); }
 const n2 = v => (+v || 0).toFixed(2).replace('.', ',');
 function csvVendas(lista) {
-  return csv([['Número', 'Data', 'Hora', 'Cliente', 'Telefone', 'Itens', 'Peças', 'Subtotal', 'Desconto', 'Total', 'Pagamento', 'Parcelas', 'Situação'],
-    ...lista.map(v => { const d = new Date(v.data); return [v.numero, d.toLocaleDateString('pt-BR'), fmtHora(v.data), v.cliente_nome, v.cliente_tel, v.itens.map(i => `${i.qtd}x ${i.nome} ${i.tamanho} ${i.cor}`).join(' | '), sum(v.itens.map(i => i.qtd)), n2(v.subtotal), n2(v.desconto), n2(v.total), v.forma, v.parcelas, v.cancelada ? 'Cancelada' : 'Concluída']; })]);
+  return csv([['Número', 'Data', 'Hora', 'Vendedora', 'Cliente', 'Telefone', 'Itens', 'Peças', 'Subtotal', 'Desconto', 'Total', 'Pagamento', 'Parcelas', 'Situação'],
+    ...lista.map(v => { const d = new Date(v.data); return [v.numero, d.toLocaleDateString('pt-BR'), fmtHora(v.data), v.vendedor, v.cliente_nome, v.cliente_tel, v.itens.map(i => `${i.qtd}x ${i.nome} ${i.tamanho} ${i.cor}`).join(' | '), sum(v.itens.map(i => i.qtd)), n2(v.subtotal), n2(v.desconto), n2(v.total), v.forma, v.parcelas, v.cancelada ? 'Cancelada' : 'Concluída']; })]);
 }
 function csvEstoque() {
   return csv([['Código', 'Tipo', 'Nome', 'Tamanho', 'Cor', 'Preço', 'Custo', 'Estoque', 'Estoque mínimo'],
@@ -741,6 +981,14 @@ create table if not exists public.config (id text primary key, valor jsonb not n
 create index if not exists produtos_upd on public.produtos(updated_at);
 create index if not exists vendas_upd on public.vendas(updated_at);
 create index if not exists vendas_data on public.vendas(data);
+-- versão 3.3: vendedora nas vendas e detalhes das movimentações (devoluções). Pode rodar de novo sem problema.
+alter table public.vendas add column if not exists vendedor text;
+alter table public.ajustes add column if not exists tipo text;
+alter table public.ajustes add column if not exists venda_id uuid;
+alter table public.ajustes add column if not exists cliente text;
+alter table public.ajustes add column if not exists vendedor text;
+alter table public.ajustes add column if not exists valor numeric(12,2);
+create index if not exists ajustes_upd on public.ajustes(updated_at);
 
 -- carimbo de alteração (usado na sincronização)
 create or replace function public.prd_upd() returns trigger language plpgsql as $$
@@ -782,7 +1030,8 @@ do $$ declare t text; begin foreach t in array array['produtos','ajustes','venda
   execute format('drop policy if exists equipe on public.%I', t);
   execute format('create policy equipe on public.%I for all to authenticated using (true) with check (true)', t);
   execute format('grant select, insert, update, delete on public.%I to authenticated', t);
-end loop; end $$;`;
+end loop; end $$;
+notify pgrst, 'reload schema';`;
 
 function rAjustes() {
   const c = cfg();
@@ -798,10 +1047,12 @@ function rAjustes() {
         <label class="span2" style="grid-column:1/-1">Mensagem no recibo<textarea name="rodape" rows="2">${esc(c.rodape)}</textarea></label>
         <div style="grid-column:1/-1"><button class="btn primary" type="submit">Salvar dados da loja</button></div>
       </form></section>
-    <section class="panel"><h2>Tipos e tamanhos</h2><p>Separe por vírgula. A ordem dos tamanhos é usada nas listas e no cadastro.</p>
+    <section class="panel"><h2>Tipos, tamanhos e vendedoras</h2><p>Separe por vírgula. A ordem dos tamanhos é usada nas listas e no cadastro.</p>
       <form id="f-listas" style="display:grid;gap:12px">
         <label>Tipos de peça<textarea name="tipos" rows="3">${esc(c.tipos.join(', '))}</textarea></label>
         <label>Tamanhos<input name="tamanhos" value="${esc(c.tamanhos.join(', '))}"></label>
+        <label>Vendedoras<input name="vendedores" value="${esc(vendedoras().join(', '))}" aria-describedby="vend-dica"></label>
+        <p id="vend-dica" style="margin:-4px 0 0;font-size:13px">Na venda aparece também a opção Outros, para escrever outro nome.</p>
         <div><button class="btn primary" type="submit">Salvar listas</button></div>
       </form></section>
     <section class="panel" id="aj-app"></section>
@@ -821,9 +1072,10 @@ function rAjustes() {
   $('#f-loja').addEventListener('submit', e => { e.preventDefault(); const f = e.target; ['nome', 'subtitulo', 'whatsapp', 'instagram', 'rodape'].forEach(k => cfg()[k] = f[k].value.trim()); if (!cfg().nome) cfg().nome = 'DR Darre'; dirty('config', 'loja'); pintarMarca(); toast('Dados da loja salvos.', 'ok'); });
   $('#f-listas').addEventListener('submit', e => {
     e.preventDefault(); const sp = s => [...new Set(s.split(',').map(x => x.trim()).filter(Boolean))];
-    const t = sp(e.target.tipos.value), tm = sp(e.target.tamanhos.value);
+    const t = sp(e.target.tipos.value), tm = sp(e.target.tamanhos.value), vd = sp(e.target.vendedores.value).filter(n => norm(n) !== 'outros');
     if (!t.length || !tm.length) return toast('Informe pelo menos um tipo e um tamanho.', 'warn');
-    cfg().tipos = t; cfg().tamanhos = tm; dirty('config', 'loja'); toast('Listas salvas.', 'ok');
+    if (!vd.length) return toast('Informe pelo menos uma vendedora.', 'warn');
+    cfg().tipos = t; cfg().tamanhos = tm; cfg().vendedores = vd; dirty('config', 'loja'); listasAux(); toast('Listas salvas.', 'ok');
   });
   $('#seg-tema').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; S.tema = b.dataset.v; aplicarTema(); persist(); $$('#seg-tema button').forEach(x => x.setAttribute('aria-pressed', x === b)); });
   $('#arq-backup').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) restaurar(f); });
@@ -886,8 +1138,9 @@ async function restaurar(file) {
   if (j.pecas) { if (!await confirmar(`Importar o backup do sistema anterior (${(j.pecas || []).length} peças, ${(j.vendas || []).length} vendas)?`, { ok: 'Importar' })) return; const r = importarV2(j); renderDados(); return toast(`${r.np} peças e ${r.nv} vendas importadas.`, 'ok'); }
   if (!j.produtos || !j.vendas) return toast('Este arquivo não é um backup do DR Darre.', 'bad');
   if (!await confirmar(`Restaurar o backup de ${j.exportado ? fmtDT(j.exportado) : 'data desconhecida'}? As peças e vendas do arquivo serão juntadas às deste aparelho.`, { ok: 'Restaurar' })) return;
-  j.produtos.forEach(p => { const atual = S.produtos[p.id]; const delta = (+p.qtd || 0) - (atual ? atual.qtd : 0); S.produtos[p.id] = { ...p }; dirty('produtos', p.id); if (delta) addAjuste(p.id, delta, 'Backup restaurado'); });
+  j.produtos.forEach(p => { const atual = S.produtos[p.id]; const delta = (+p.qtd || 0) - (atual ? atual.qtd : 0); S.produtos[p.id] = { ...p }; dirty('produtos', p.id); if (delta) addAjuste(p.id, delta, 'Backup restaurado', { tipo: 'carga' }); });
   j.vendas.forEach(v => { if (!S.vendas[v.id]) { S.vendas[v.id] = { ...v, baixa_estoque: false }; dirty('vendas', v.id); } });
+  (j.movs || []).forEach(m => { if (!S.movs[m.id]) S.movs[m.id] = m; });
   if (j.config) { S.config.valor = { ...DEF_CFG, ...j.config }; dirty('config', 'loja'); }
   await salvarJa(); renderDados(); toast('Backup restaurado.', 'ok');
 }
@@ -898,6 +1151,9 @@ document.addEventListener('click', async e => {
   const ed = e.target.closest('[data-edit]'); if (ed) return abrirProduto(ed.dataset.edit);
   const vd = e.target.closest('[data-venda]'); if (vd) return abrirVenda(vd.dataset.venda);
   const et = e.target.closest('[data-etq]'); if (et) return abrirEtiquetas([et.dataset.etq]);
+  const co = e.target.closest('[data-cons]'); if (co) return consultar(co.dataset.cons);
+  const dv = e.target.closest('[data-dev]'); if (dv) { const [pid, vid] = dv.dataset.dev.split('|'); return abrirDevolucao(pid, vid); }
+  const ac = e.target.closest('[data-addcart]'); if (ac) { const p = S.produtos[ac.dataset.addcart]; if (p) { ir('vender'); adicionar(p); } return; }
   const act = e.target.closest('[data-act]')?.dataset.act; if (!act) return;
   const hoje = dayKey(new Date());
   switch (act) {
@@ -905,12 +1161,14 @@ document.addEventListener('click', async e => {
     case 'instalar': instalarApp(); break;
     case 'ver-baixo': ir('produtos'); $('#p-baixo').checked = true; rProdutos(); break;
     case 'mais': pLimite += 200; rProdutos(); break;
+    case 'mais-mov': mLimite += 300; rEstoque(); break;
+    case 'csv-mov': { const l = movimentos(); if (!l.length) return toast('Não há movimentações no período escolhido.', 'warn'); baixar(`movimentacoes-${hoje}.csv`, csvMov(), 'text/csv;charset=utf-8'); break; }
     case 'sel-etq': abrirEtiquetas([...sel]); break;
     case 'sel-clear': sel.clear(); rProdutos(); break;
     case 'csv-vendas': { const l = vendasFiltradas(true); if (!l.length) return toast('Não há vendas no período escolhido.', 'warn'); baixar(`vendas-${hoje}.csv`, csvVendas(l), 'text/csv;charset=utf-8'); break; }
     case 'csv-todas': baixar(`vendas-completo-${hoje}.csv`, csvVendas(Object.values(S.vendas).sort((a, b) => b.data.localeCompare(a.data))), 'text/csv;charset=utf-8'); break;
     case 'csv-estoque': baixar(`estoque-${hoje}.csv`, csvEstoque(), 'text/csv;charset=utf-8'); break;
-    case 'backup': baixar(`backup-drdarre-${hoje}.json`, JSON.stringify({ sistema: 'DR Darre', versao: 3, exportado: nowISO(), produtos: Object.values(S.produtos), vendas: Object.values(S.vendas), config: cfg() }), 'application/json'); toast('Backup baixado.', 'ok'); break;
+    case 'backup': baixar(`backup-drdarre-${hoje}.json`, JSON.stringify({ sistema: 'DR Darre', versao: 3, exportado: nowISO(), produtos: Object.values(S.produtos), vendas: Object.values(S.vendas), movs: Object.values(S.movs), config: cfg() }), 'application/json'); toast('Backup baixado.', 'ok'); break;
     case 'restaurar': $('#arq-backup').click(); break;
     case 'sync': sync(true); break;
     case 'sair': if (await confirmar(pendentes() ? `Há ${pendentes()} alterações que ainda não subiram. Desconectando agora, elas ficam só neste aparelho até você entrar de novo. Continuar?` : 'Desconectar este aparelho da nuvem? Os dados continuam salvos aqui.', { ok: 'Desconectar', perigo: !!pendentes() })) { S.cloud = { url: S.cloud.url, key: S.cloud.key, email: S.cloud.email }; persist(); pintarNuvem(); pintarSync(); } break;
@@ -935,6 +1193,7 @@ $('#btn-tema').addEventListener('click', () => {
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'F2') { e.preventDefault(); ir('vender'); setTimeout(() => busca.focus(), 50); }
+  if (e.key === 'F3') { e.preventDefault(); ir('estoque'); setTimeout(() => { consBusca.focus(); consBusca.select(); }, 50); }
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && vista === 'vender' && !dlg.open) { e.preventDefault(); finalizar(); }
 });
 window.addEventListener('hashchange', mostrar);
@@ -991,10 +1250,12 @@ function registrarSW() {
   const salvo = await KV.get('state');
   if (salvo && salvo.v === 3) {
     const base = novoEstado();
-    S = { ...base, ...salvo, outbox: { ...base.outbox, ...salvo.outbox }, cursor: { ...base.cursor, ...salvo.cursor }, config: { id: 'loja', ...salvo.config, valor: { ...DEF_CFG, ...(salvo.config?.valor || {}) } } };
+    S = { ...base, ...salvo, movs: salvo.movs || {}, outbox: { ...base.outbox, ...salvo.outbox }, cursor: { ...base.cursor, ...salvo.cursor }, config: { id: 'loja', ...salvo.config, valor: { ...DEF_CFG, ...(salvo.config?.valor || {}) } } };
   }
   if (localStorage.getItem('pr-darre-tema') === 'true' && !salvo) S.tema = 'dark';
   aplicarTema();
+  Object.values(S.ajustes).forEach(a => { if (!S.movs[a.id]) S.movs[a.id] = { ...a }; });   // ajustes ainda não enviados entram no histórico
+  if (salvo && salvo.v === 3 && !salvo.movs && Cloud.pronto()) S.cursor.ajustes = '';          // baixa da nuvem o histórico antigo
   if (S.config.valor.nome === 'PR Darre') { S.config.valor.nome = 'DR Darre'; dirty('config', 'loja'); }
   let migrou = null;
   if (!localStorage.getItem('pr-darre-migrado')) {

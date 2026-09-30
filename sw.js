@@ -1,7 +1,7 @@
 /* DR Darre – service worker
    Guarda os arquivos do sistema no aparelho para o app abrir sem internet.
    Ao publicar uma versão nova, troque o número em VERSAO. */
-const VERSAO = 'prdarre-3.2.0';
+const VERSAO = 'prdarre-3.3.0';
 const ARQUIVOS = [
   './', './index.html', './css/estilo.css', './js/app.js', './vendor/qrcode.min.js', './manifest.webmanifest',
   './fonts/bodoni-moda-latin-500-normal.woff2', './fonts/bodoni-moda-latin-700-normal.woff2',

@@ -37,11 +37,25 @@ use **Ajustes › Baixar backup** e **Restaurar backup**, ou conecte a nuvem.
 | Tipos de peça e tamanhos padrão | `js/app.js` | constante `DEF_CFG` (também muda pelo sistema, em Ajustes) |
 | Texto do comprovante no WhatsApp | `js/app.js` | função `textoWa` |
 | Layout do recibo | `js/app.js` | função `reciboHTML` |
-| Tamanho das etiquetas | `css/estilo.css` | bloco `@media print`, classes `.etq` |
+| Tamanho e layout das etiquetas | `css/estilo.css` | bloco "etiquetas", classes `.etq`, `.et-bar` |
+| Código de barras das etiquetas | `js/app.js` | função `barrasSVG` (Code 128, lido por leitor USB/Bluetooth e pela câmera) |
+| Nomes das vendedoras | pelo sistema | Ajustes › Tipos, tamanhos e vendedoras (a opção Outros aparece sempre) |
+| Aba Estoque, consulta e devoluções | `js/app.js` | bloco `ESTOQUE`: `rConsulta`, `abrirDevolucao`, `movimentos`, `rEstoque` |
 | Sincronização com a nuvem | `js/app.js` | objeto `Cloud` e funções `sync`, `enviar`, `receber` |
 | Tabelas e regras de estoque no banco | `sql/drdarre-supabase.sql` | |
 
 Se mudar colunas das tabelas, atualize também o objeto `PICK` em `js/app.js`, que define o que é enviado à nuvem.
+
+## Novidades da versão 3.3
+
+- **Aba Estoque:** entradas, vendas, devoluções e ajustes por período, estoque atual por tipo e planilha das movimentações.
+- **Consulta de peça:** digite o código ou leia o código de barras (também pelo ícone no topo ou F3). Mostra preço e estoque; se a peça foi vendida, mostra quando, para quem, por qual vendedora e o valor pago.
+- **Etiquetas com código de barras** e o código escrito embaixo. O QR code continua como opção.
+- **Devolução:** em Editar peça ou na consulta, a peça volta ao estoque ligada à venda de origem.
+- **Vendedora em cada venda:** Regina, Bianca ou Outros (com nome). Aparece no recibo, no relatório e na planilha.
+
+Quem já usa a nuvem precisa rodar de novo o `sql/drdarre-supabase.sql` no SQL Editor (ele só acrescenta colunas, não apaga nada).
+Até rodar, as vendas continuam guardadas no aparelho e sobem assim que o banco for atualizado.
 
 ## Nuvem (opcional)
 

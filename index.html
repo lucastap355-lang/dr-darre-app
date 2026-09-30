@@ -23,6 +23,9 @@
 <header class="topbar">
   <a class="brand" href="#inicio"><b id="brand-nome">DR Darre</b><small id="brand-sub">Moda &amp; acessórios</small></a>
   <span class="grow"></span>
+  <button class="icon-btn" id="btn-consulta" type="button" aria-label="Consultar peça pelo código" title="Consultar peça (F3)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6v12M7 6v12M10.5 6v12M13 6v7M16 6v5M19 6v4"/><circle cx="16.5" cy="16.5" r="3"/><path d="m18.7 18.7 2 2"/></svg>
+  </button>
   <button class="sync" id="sync-pill" type="button" data-s="local"><i></i><span>Só neste aparelho</span></button>
   <button class="icon-btn" id="btn-tema" type="button" aria-label="Alternar tema claro ou escuro">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor"/></svg>
@@ -33,6 +36,7 @@
   <button data-go="inicio"><svg viewBox="0 0 24 24"><path d="M3.5 10.5 12 4l8.5 6.5V20a1 1 0 0 1-1 1H15v-6H9v6H4.5a1 1 0 0 1-1-1z"/></svg><span>Início</span></button>
   <button data-go="vender"><svg viewBox="0 0 24 24"><path d="M5 8h14l-1.2 12.1a1 1 0 0 1-1 .9H7.2a1 1 0 0 1-1-.9z"/><path d="M9 10V6.5a3 3 0 0 1 6 0V10"/></svg><span>Vender</span></button>
   <button data-go="produtos"><svg viewBox="0 0 24 24"><path d="M10 5.5a2 2 0 1 1 2 2v2"/><path d="M12 9.5 3.4 16.3a1 1 0 0 0 .6 1.7h16a1 1 0 0 0 .6-1.7z"/></svg><span>Produtos</span></button>
+  <button data-go="estoque"><svg viewBox="0 0 24 24"><path d="M4 8.5 12 4l8 4.5v9L12 22l-8-4.5z"/><path d="M4 8.5 12 13l8-4.5M12 13v9"/></svg><span>Estoque</span></button>
   <button data-go="vendas"><svg viewBox="0 0 24 24"><path d="M4 20h16"/><path d="M7 16v-5"/><path d="M12 16V6"/><path d="M17 16v-8"/></svg><span>Vendas</span></button>
   <button data-go="ajustes"><svg viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg><span>Ajustes</span></button>
 </nav>
@@ -46,8 +50,8 @@
         <h1 class="h1">Nova venda</h1>
         <div class="search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
-          <input id="busca" placeholder="Leia a etiqueta ou busque a peça" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done" aria-label="Buscar peça">
-          <button class="icon-btn" id="btn-scan" type="button" aria-label="Ler QR code com a câmera" title="Ler com a câmera">
+          <input id="busca" placeholder="Leia o código de barras ou busque a peça" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done" aria-label="Buscar peça">
+          <button class="icon-btn" id="btn-scan" type="button" aria-label="Ler etiqueta com a câmera" title="Ler com a câmera">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16M7 12h10"/></svg>
           </button>
           <div class="sugs" id="sugs" role="listbox" hidden></div>
@@ -70,6 +74,9 @@
           <button type="button" data-v="Crédito" aria-pressed="false">Crédito</button>
         </div>
         <div id="pg-extra"></div>
+        <span class="lbl">Vendedora</span>
+        <div class="chips vend" id="vend"></div>
+        <input id="vend-outro" placeholder="Nome de quem vendeu" autocomplete="off" hidden aria-label="Nome de quem vendeu">
         <details class="cli"><summary>Cliente <span class="muted">&nbsp;(opcional)</span></summary>
           <div><input id="cli-nome" list="dl-clientes" placeholder="Nome da cliente" autocomplete="off"><input id="cli-tel" inputmode="tel" placeholder="WhatsApp com DDD" autocomplete="off"></div>
         </details>
@@ -92,6 +99,36 @@
     <div id="plist"></div>
   </section>
 
+  <section class="view" id="v-estoque" hidden>
+    <div class="vhead"><h1 class="h1">Estoque</h1><button class="btn ghost" type="button" data-act="csv-mov">Exportar movimentações</button></div>
+    <div class="consulta panel">
+      <label for="cons-busca">Consultar peça</label>
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+        <input id="cons-busca" placeholder="Digite o código ou leia o código de barras" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="search">
+        <button class="icon-btn" id="btn-scan-cons" type="button" aria-label="Ler etiqueta com a câmera" title="Ler com a câmera">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16M7 12h10"/></svg>
+        </button>
+      </div>
+      <div id="cons-res"></div>
+    </div>
+    <div class="toolbar">
+      <div class="seg" id="m-per">
+        <button type="button" data-v="hoje" aria-pressed="false">Hoje</button>
+        <button type="button" data-v="7" aria-pressed="false">7 dias</button>
+        <button type="button" data-v="30" aria-pressed="true">30 dias</button>
+        <button type="button" data-v="mes" aria-pressed="false">Este mês</button>
+        <button type="button" data-v="per" aria-pressed="false">Período</button>
+      </div>
+      <input type="date" id="m-de" aria-label="De" hidden style="flex:0 1 160px">
+      <input type="date" id="m-ate" aria-label="Até" hidden style="flex:0 1 160px">
+      <select id="m-tipo" aria-label="Tipo de movimentação" style="flex:0 1 200px">
+        <option value="">Entradas e saídas</option><option value="e">Só entradas</option><option value="s">Só saídas</option><option value="devolucao">Só devoluções</option>
+      </select>
+    </div>
+    <div id="mres"></div>
+  </section>
+
   <section class="view" id="v-vendas" hidden>
     <div class="vhead"><h1 class="h1">Vendas</h1><button class="btn ghost" type="button" data-act="csv-vendas">Exportar planilha</button></div>
     <div class="toolbar">
@@ -107,6 +144,7 @@
       <select id="per-forma" aria-label="Forma de pagamento" style="flex:0 1 190px">
         <option value="">Todas as formas</option><option>Pix</option><option>Dinheiro</option><option>Débito</option><option>Crédito</option>
       </select>
+      <select id="per-vend" aria-label="Vendedora" style="flex:0 1 190px"><option value="">Todas as vendedoras</option></select>
     </div>
     <div id="vres"></div>
   </section>

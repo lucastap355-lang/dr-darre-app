@@ -17,6 +17,14 @@ create table if not exists public.config (id text primary key, valor jsonb not n
 create index if not exists produtos_upd on public.produtos(updated_at);
 create index if not exists vendas_upd on public.vendas(updated_at);
 create index if not exists vendas_data on public.vendas(data);
+-- versão 3.3: vendedora nas vendas e detalhes das movimentações (devoluções). Pode rodar de novo sem problema.
+alter table public.vendas add column if not exists vendedor text;
+alter table public.ajustes add column if not exists tipo text;
+alter table public.ajustes add column if not exists venda_id uuid;
+alter table public.ajustes add column if not exists cliente text;
+alter table public.ajustes add column if not exists vendedor text;
+alter table public.ajustes add column if not exists valor numeric(12,2);
+create index if not exists ajustes_upd on public.ajustes(updated_at);
 
 -- carimbo de alteração (usado na sincronização)
 create or replace function public.prd_upd() returns trigger language plpgsql as $$
@@ -59,3 +67,4 @@ do $$ declare t text; begin foreach t in array array['produtos','ajustes','venda
   execute format('create policy equipe on public.%I for all to authenticated using (true) with check (true)', t);
   execute format('grant select, insert, update, delete on public.%I to authenticated', t);
 end loop; end $$;
+notify pgrst, 'reload schema';
