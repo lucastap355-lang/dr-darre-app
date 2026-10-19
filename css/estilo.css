@@ -183,6 +183,14 @@ label>input,label>select,label>textarea{color:var(--ink);font-size:15px;font-wei
 #vend-outro{height:40px}
 .troco{display:flex;justify-content:space-between;font-weight:600;padding:2px 2px 0}
 .troco.bad{color:var(--bad)}
+#pg-extra{display:flex;flex-direction:column;gap:8px}
+.pgl{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.pgl-top{display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:600}
+.pgl-top input{width:132px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.pgl-parc{width:100%}
+.pg-status{padding:9px 12px;border-radius:9px;font-size:13.5px;font-weight:600}
+.pg-status.ok{background:var(--ok-soft);color:var(--ok)}
+.pg-status.bad{background:var(--bad-soft);color:var(--bad)}
 details.cli{border:1px solid var(--line);border-radius:9px;padding:0 12px}
 details.cli summary{cursor:pointer;height:42px;display:flex;align-items:center;font-size:14px;font-weight:500;list-style:none}
 details.cli summary::after{content:"+";margin-left:auto;color:var(--muted);font-size:18px}
