@@ -19,6 +19,8 @@ create index if not exists vendas_upd on public.vendas(updated_at);
 create index if not exists vendas_data on public.vendas(data);
 -- versão 3.3: vendedora nas vendas e detalhes das movimentações (devoluções). Pode rodar de novo sem problema.
 alter table public.vendas add column if not exists vendedor text;
+-- versão 3.4: pagamento dividido em mais de uma forma (Pix + Débito etc.). Pode rodar de novo sem problema.
+alter table public.vendas add column if not exists pagamentos jsonb;
 alter table public.ajustes add column if not exists tipo text;
 alter table public.ajustes add column if not exists venda_id uuid;
 alter table public.ajustes add column if not exists cliente text;
