@@ -960,7 +960,7 @@ function vendasFiltradas(incluiCanc) {
 }
 function rVendas() {
   const todas = vendasFiltradas(true), vs = todas.filter(v => !v.cancelada);
-  const fat = sum(vs.map(v => v.total)), pcs = sum(vs.flatMap(v => v.itens.map(i => i.qtd))), desc = sum(vs.map(v => v.desconto));
+  const fat = sum(vs.map(v => v.total)), fatF = $('#per-forma').value ? sum(vs.map(v => sum(pagsDe(v).filter(p => p.forma === $('#per-forma').value).map(p => +p.valor || 0)))) : fat, pcs = sum(vs.flatMap(v => v.itens.map(i => i.qtd))), desc = sum(vs.map(v => v.desconto));
   const comCusto = vs.filter(v => v.itens.every(i => i.custo != null));
   const lucro = sum(comCusto.map(v => v.total - sum(v.itens.map(i => i.custo * i.qtd))));
   // por dia
@@ -983,9 +983,9 @@ function rVendas() {
   const devT = sum(devs.map(m => m.valor));
   $('#vres').innerHTML = `
     <div class="kpis">
-      <div class="kpi main"><span>Faturamento</span><strong>${money(fat)}</strong></div>
+      <div class="kpi main"><span>Faturamento</span><strong>${money(fatF)}</strong></div>
       <div class="kpi"><span>Vendas</span><strong>${vs.length}</strong></div>
-      <div class="kpi"><span>Ticket médio</span><strong>${money(vs.length ? fat / vs.length : 0)}</strong></div>
+      <div class="kpi"><span>Ticket médio</span><strong>${money(vs.length ? fatF / vs.length : 0)}</strong></div>
       <div class="kpi"><span>Peças vendidas</span><strong>${pcs}</strong></div>
       <div class="kpi"><span>Descontos dados</span><strong>${money(desc)}</strong></div>
       ${comCusto.length ? `<div class="kpi"><span>Lucro estimado</span><strong>${money(lucro)}</strong></div>` : ''}
@@ -1202,134 +1202,4 @@ async function conectar(e) {
 }
 async function restaurar(file) {
   let j; try { j = JSON.parse(await file.text()); } catch { return toast('Este arquivo não é um backup válido.', 'bad'); }
-  if (j.pecas) { if (!await confirmar(`Importar o backup do sistema anterior (${(j.pecas || []).length} peças, ${(j.vendas || []).length} vendas)?`, { ok: 'Importar' })) return; const r = importarV2(j); renderDados(); return toast(`${r.np} peças e ${r.nv} vendas importadas.`, 'ok'); }
-  if (!j.produtos || !j.vendas) return toast('Este arquivo não é um backup do DR Darre.', 'bad');
-  if (!await confirmar(`Restaurar o backup de ${j.exportado ? fmtDT(j.exportado) : 'data desconhecida'}? As peças e vendas do arquivo serão juntadas às deste aparelho.`, { ok: 'Restaurar' })) return;
-  j.produtos.forEach(p => { const atual = S.produtos[p.id]; const delta = (+p.qtd || 0) - (atual ? atual.qtd : 0); S.produtos[p.id] = { ...p }; dirty('produtos', p.id); if (delta) addAjuste(p.id, delta, 'Backup restaurado', { tipo: 'carga' }); });
-  j.vendas.forEach(v => { if (!S.vendas[v.id]) { S.vendas[v.id] = { ...v, baixa_estoque: false }; dirty('vendas', v.id); } });
-  (j.movs || []).forEach(m => { if (!S.movs[m.id]) S.movs[m.id] = m; });
-  if (j.config) { S.config.valor = { ...DEF_CFG, ...j.config }; dirty('config', 'loja'); }
-  await salvarJa(); renderDados(); toast('Backup restaurado.', 'ok');
-}
-
-// ---------- ações globais ----------
-document.addEventListener('click', async e => {
-  const go = e.target.closest('[data-go]'); if (go) return ir(go.dataset.go);
-  const ed = e.target.closest('[data-edit]'); if (ed) return abrirProduto(ed.dataset.edit);
-  const vd = e.target.closest('[data-venda]'); if (vd) return abrirVenda(vd.dataset.venda);
-  const et = e.target.closest('[data-etq]'); if (et) return abrirEtiquetas([et.dataset.etq]);
-  const co = e.target.closest('[data-cons]'); if (co) return consultar(co.dataset.cons);
-  const dv = e.target.closest('[data-dev]'); if (dv) { const [pid, vid] = dv.dataset.dev.split('|'); return abrirDevolucao(pid, vid); }
-  const ac = e.target.closest('[data-addcart]'); if (ac) { const p = S.produtos[ac.dataset.addcart]; if (p) { ir('vender'); adicionar(p); } return; }
-  const act = e.target.closest('[data-act]')?.dataset.act; if (!act) return;
-  const hoje = dayKey(new Date());
-  switch (act) {
-    case 'nova-peca': abrirProduto(); break;
-    case 'instalar': instalarApp(); break;
-    case 'ver-baixo': ir('produtos'); $('#p-baixo').checked = true; rProdutos(); break;
-    case 'mais': pLimite += 200; rProdutos(); break;
-    case 'mais-mov': mLimite += 300; rEstoque(); break;
-    case 'csv-mov': { const l = movimentos(); if (!l.length) return toast('Não há movimentações no período escolhido.', 'warn'); baixar(`movimentacoes-${hoje}.csv`, csvMov(), 'text/csv;charset=utf-8'); break; }
-    case 'sel-etq': abrirEtiquetas([...sel]); break;
-    case 'sel-clear': sel.clear(); rProdutos(); break;
-    case 'csv-vendas': { const l = vendasFiltradas(true); if (!l.length) return toast('Não há vendas no período escolhido.', 'warn'); baixar(`vendas-${hoje}.csv`, csvVendas(l), 'text/csv;charset=utf-8'); break; }
-    case 'csv-todas': baixar(`vendas-completo-${hoje}.csv`, csvVendas(Object.values(S.vendas).sort((a, b) => b.data.localeCompare(a.data))), 'text/csv;charset=utf-8'); break;
-    case 'csv-estoque': baixar(`estoque-${hoje}.csv`, csvEstoque(), 'text/csv;charset=utf-8'); break;
-    case 'backup': baixar(`backup-drdarre-${hoje}.json`, JSON.stringify({ sistema: 'DR Darre', versao: 3, exportado: nowISO(), produtos: Object.values(S.produtos), vendas: Object.values(S.vendas), movs: Object.values(S.movs), config: cfg() }), 'application/json'); toast('Backup baixado.', 'ok'); break;
-    case 'restaurar': $('#arq-backup').click(); break;
-    case 'sync': sync(true); break;
-    case 'sair': if (await confirmar(pendentes() ? `Há ${pendentes()} alterações que ainda não subiram. Desconectando agora, elas ficam só neste aparelho até você entrar de novo. Continuar?` : 'Desconectar este aparelho da nuvem? Os dados continuam salvos aqui.', { ok: 'Desconectar', perigo: !!pendentes() })) { S.cloud = { url: S.cloud.url, key: S.cloud.key, email: S.cloud.email }; persist(); pintarNuvem(); pintarSync(); } break;
-    case 'copiar-sql': try { await navigator.clipboard.writeText(SQL); toast('Script copiado. Cole no SQL Editor do Supabase.', 'ok'); } catch { $('.sql').select(); toast('Selecionei o script: use Ctrl + C para copiar.', 'warn'); } break;
-    case 'baixar-sql': baixar('drdarre-supabase.sql', SQL, 'text/plain;charset=utf-8'); break;
-    case 'apagar':
-      if (!await confirmar(Cloud.pronto() ? 'Apagar os dados deste aparelho? O que já está na nuvem continua lá e volta quando você conectar de novo.' : 'Apagar TODAS as peças e vendas deste aparelho? Sem nuvem conectada, isso não tem volta. Faça um backup antes.', { ok: 'Apagar dados', perigo: true })) return;
-      if (pendentes() && Cloud.pronto() && !await confirmar(`Ainda há ${pendentes()} alterações sem enviar à nuvem. Elas serão perdidas.`, { ok: 'Apagar mesmo assim', perigo: true })) return;
-      await KV.del('state'); localStorage.setItem('pr-darre-migrado', '1'); location.reload(); break;
-  }
-});
-$('#sync-pill').addEventListener('click', () => { ir('ajustes'); if (Cloud.pronto()) sync(true); });
-function aplicarTema() {
-  const r = document.documentElement;
-  if (S.tema === 'auto') r.removeAttribute('data-theme'); else r.dataset.theme = S.tema;
-  const escuro = S.tema === 'dark' || (S.tema === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
-  $('meta[name=theme-color]').content = escuro ? '#161217' : '#FAF7F8';
-}
-$('#btn-tema').addEventListener('click', () => {
-  const escuro = S.tema === 'dark' || (S.tema === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
-  S.tema = escuro ? 'light' : 'dark'; aplicarTema(); persist(); if (vista === 'ajustes') $$('#seg-tema button').forEach(x => x.setAttribute('aria-pressed', x.dataset.v === S.tema));
-});
-document.addEventListener('keydown', e => {
-  if (e.key === 'F2') { e.preventDefault(); ir('vender'); setTimeout(() => busca.focus(), 50); }
-  if (e.key === 'F3') { e.preventDefault(); ir('estoque'); setTimeout(() => { consBusca.focus(); consBusca.select(); }, 50); }
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && vista === 'vender' && !dlg.open) { e.preventDefault(); finalizar(); }
-});
-window.addEventListener('hashchange', mostrar);
-window.addEventListener('online', () => { pintarSync(); sync(); });
-window.addEventListener('offline', () => pintarSync());
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sync(); else salvarJa(); });
-window.addEventListener('pagehide', () => salvarJa());
-setInterval(() => { if (document.visibilityState === 'visible') sync(); }, 25000);
-
-
-// ---------- aplicativo instalável (PWA) ----------
-let pedidoInstalar = null, armazenamentoFixo = null;
-const instalado = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-const ehIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); pedidoInstalar = e; if (vista === 'inicio') rInicio(); pintarApp(); });
-window.addEventListener('appinstalled', () => { pedidoInstalar = null; toast('Aplicativo instalado. Procure o ícone DR Darre na tela do celular.', 'ok'); renderDados(); pintarApp(); });
-async function instalarApp() {
-  if (!pedidoInstalar) return ir('ajustes');
-  pedidoInstalar.prompt();
-  const r = await pedidoInstalar.userChoice.catch(() => null);
-  if (r && r.outcome === 'accepted') pedidoInstalar = null;
-  renderDados(); pintarApp();
-}
-function pintarApp() {
-  const el = $('#aj-app'); if (!el) return;
-  const seguro = location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname);
-  let corpo;
-  if (instalado()) corpo = `<div class="cloud-state ok"><div class="grow"><b>Você está usando o aplicativo instalado</b><small>Ele abre mesmo sem internet. As vendas sobem para a nuvem quando a conexão voltar.</small></div></div>`;
-  else if (!seguro) corpo = `<p>Para instalar no celular, o sistema precisa estar publicado num endereço que começa com https, como o GitHub Pages. Aberto direto do arquivo, ele funciona, mas não vira aplicativo.</p>`;
-  else if (pedidoInstalar) corpo = `<p>Instale para abrir o sistema pelo ícone na tela inicial, em tela cheia e sem internet.</p><div class="btns"><button class="btn primary" type="button" data-act="instalar">Instalar aplicativo</button></div>`;
-  else if (ehIOS()) corpo = `<p>No iPhone, instale pelo Safari:</p><ol class="steps"><li>Toque no botão <b>Compartilhar</b> (o quadrado com a seta para cima).</li><li>Escolha <b>Adicionar à Tela de Início</b>.</li><li>Toque em <b>Adicionar</b>.</li></ol>`;
-  else corpo = `<p>No Android, abra o menu do Chrome (os três pontinhos) e toque em <b>Instalar aplicativo</b> ou <b>Adicionar à tela inicial</b>.</p>`;
-  const fixo = armazenamentoFixo === true ? 'Os dados deste aparelho estão protegidos contra limpeza automática do navegador.' : armazenamentoFixo === false ? 'O navegador pode apagar os dados deste aparelho se faltar espaço. Instale o aplicativo ou conecte a nuvem para proteger.' : '';
-  el.innerHTML = `<h2>Aplicativo no celular</h2>${corpo}${fixo ? `<p style="margin-top:12px;font-size:13px">${fixo}</p>` : ''}`;
-}
-async function protegerArmazenamento() {
-  try { if (navigator.storage && navigator.storage.persist) armazenamentoFixo = (await navigator.storage.persisted()) || (await navigator.storage.persist()); } catch {}
-  pintarApp();
-}
-function registrarSW() {
-  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
-  navigator.serviceWorker.register('sw.js').then(reg => {
-    const avisar = w => toast('Há uma versão nova do sistema.', 'ok', { label: 'Atualizar', fn: () => w.postMessage('atualizar') });
-    if (reg.waiting && navigator.serviceWorker.controller) avisar(reg.waiting);
-    reg.addEventListener('updatefound', () => { const w = reg.installing; w && w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) avisar(w); }); });
-    setInterval(() => reg.update().catch(() => {}), 60 * 60 * 1000);
-  }).catch(e => console.warn('Service worker não registrado', e));
-  let recarregando = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (recarregando) return; recarregando = true; salvarJa().then(() => location.reload()); });
-}
-
-// ---------- início ----------
-(async function iniciar() {
-  const salvo = await KV.get('state');
-  if (salvo && salvo.v === 3) {
-    const base = novoEstado();
-    S = { ...base, ...salvo, movs: salvo.movs || {}, outbox: { ...base.outbox, ...salvo.outbox }, cursor: { ...base.cursor, ...salvo.cursor }, config: { id: 'loja', ...salvo.config, valor: { ...DEF_CFG, ...(salvo.config?.valor || {}) } } };
-  }
-  if (localStorage.getItem('pr-darre-tema') === 'true' && !salvo) S.tema = 'dark';
-  aplicarTema();
-  Object.values(S.ajustes).forEach(a => { if (!S.movs[a.id]) S.movs[a.id] = { ...a }; });   // ajustes ainda não enviados entram no histórico
-  if (salvo && salvo.v === 3 && !salvo.movs && Cloud.pronto()) S.cursor.ajustes = '';          // baixa da nuvem o histórico antigo
-  if (S.config.valor.nome === 'PR Darre') { S.config.valor.nome = 'DR Darre'; dirty('config', 'loja'); }
-  let migrou = null;
-  if (!localStorage.getItem('pr-darre-migrado')) {
-    try { const antigo = JSON.parse(localStorage.getItem('pr-darre-dados') || 'null'); if (antigo && (antigo.pecas?.length || antigo.vendas?.length)) migrou = importarV2(antigo); } catch {}
-    localStorage.setItem('pr-darre-migrado', '1'); await salvarJa();
-  }
-  mostrar(); registrarSW(); protegerArmazenamento();
-  if (migrou) toast(`Trouxe ${migrou.np} ${migrou.np === 1 ? 'peça' : 'peças'} e ${migrou.nv} ${migrou.nv === 1 ? 'venda' : 'vendas'} do sistema anterior.`, 'ok');
-  sync();
-})();
+  if (j.pecas) { if (!await confirmar(`Importar o backup do sistema anterior (${(j.pecas || []).length} peças, ${(j.vendas || []).length} vendas)?`, { ok: 'Importar' })) return; const r = importarV2(j); renderDad
