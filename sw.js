@@ -1,7 +1,7 @@
 /* DR Darre – service worker
    Guarda os arquivos do sistema no aparelho para o app abrir sem internet.
    Ao publicar uma versão nova, troque o número em VERSAO. */
-const VERSAO = 'prdarre-3.6.0';
+const VERSAO = 'prdarre-3.7.0';
 const ARQUIVOS = [
   './', './index.html', './css/estilo.css', './js/app.js', './vendor/qrcode.min.js', './manifest.webmanifest',
   './fonts/bodoni-moda-latin-500-normal.woff2', './fonts/bodoni-moda-latin-700-normal.woff2',
@@ -10,7 +10,8 @@ const ARQUIVOS = [
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSAO).then(c => c.addAll(ARQUIVOS)));
+  self.skipWaiting();
+  e.waitUntil(caches.open(VERSAO).then(c => c.addAll(ARQUIVOS.map(u => new Request(u, { cache: 'reload' })))));
 });
 
 self.addEventListener('activate', e => {
