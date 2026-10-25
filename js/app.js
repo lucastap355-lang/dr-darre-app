@@ -1148,6 +1148,43 @@ do $$ declare t text; begin foreach t in array array['produtos','ajustes','venda
   execute format('grant select, insert, update, delete on public.%I to authenticated', t);
 end loop; end $$;
 notify pgrst, 'reload schema';`;
+const SQL_BACKUP = `-- DR Darre · cópias automáticas na nuvem. Rode uma vez no SQL Editor do Supabase.
+-- Guarda uma cópia das peças, vendas e movimentações às 08h e às 18h (horário de Brasília), por 30 dias.
+-- Pode rodar de novo sem problema.
+create extension if not exists pg_cron;
+
+create table if not exists public.backups (
+  id uuid primary key default gen_random_uuid(),
+  criado_em timestamptz not null default now(),
+  dados jsonb not null);
+create index if not exists backups_criado on public.backups(criado_em desc);
+
+create or replace function public.prd_backup() returns void language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.backups(dados) values (jsonb_build_object(
+    'sistema', 'DR Darre', 'origem', 'nuvem', 'versao', 3, 'exportado', now(),
+    'produtos', coalesce((select jsonb_agg(to_jsonb(p)) from public.produtos p), '[]'::jsonb),
+    'vendas',   coalesce((select jsonb_agg(to_jsonb(v)) from public.vendas v), '[]'::jsonb),
+    'movs',     coalesce((select jsonb_agg(to_jsonb(a)) from public.ajustes a), '[]'::jsonb),
+    'config',   coalesce((select valor from public.config where id = 'loja'), '{}'::jsonb)));
+  delete from public.backups where criado_em < now() - interval '30 days';
+end $$;
+
+-- só quem está logado na loja pode ler as cópias; ninguém altera pelo aplicativo
+alter table public.backups enable row level security;
+drop policy if exists equipe_le on public.backups;
+create policy equipe_le on public.backups for select to authenticated using (true);
+grant select on public.backups to authenticated;
+
+-- horários em UTC: 11h = 08h de Brasília, 21h = 18h de Brasília
+select cron.unschedule(jobid) from cron.job where jobname in ('prd_backup_manha', 'prd_backup_noite');
+select cron.schedule('prd_backup_manha', '0 11 * * *', 'select public.prd_backup()');
+select cron.schedule('prd_backup_noite', '0 21 * * *', 'select public.prd_backup()');
+
+-- faz uma primeira cópia agora
+select public.prd_backup();
+notify pgrst, 'reload schema';
+`;
 
 function rAjustes() {
   const c = cfg();
@@ -1171,6 +1208,11 @@ function rAjustes() {
         <p id="vend-dica" style="margin:-4px 0 0;font-size:13px">Na venda aparece também a opção Outros, para escrever outro nome.</p>
         <div><button class="btn primary" type="submit">Salvar listas</button></div>
       </form></section>
+    <section class="panel"><h2>Cópias automáticas da nuvem</h2><p>O Supabase guarda sozinho uma cópia das peças e vendas às 08h e às 18h, por 30 dias. Use para recuperar algo apagado ou ao trocar de celular.</p>
+      <div class="btns"><button class="btn primary" type="button" data-act="ver-copias">Ver cópias e restaurar</button></div>
+      <details class="how"><summary>Ativar as cópias (uma vez só)</summary>
+        <ol class="steps"><li>Toque em <b>Copiar script</b> abaixo.</li><li>No Supabase, abra <b>SQL Editor</b>, cole o script e clique em <b>Run</b>.</li><li>Pronto: uma primeira cópia já é feita na hora.</li></ol>
+        <div class="btns"><button class="btn ghost sm" type="button" data-act="copiar-sql-backup">Copiar script</button><button class="btn ghost sm" type="button" data-act="baixar-sql-backup">Baixar como arquivo</button></div></details></section>
     <section class="panel" id="aj-app"></section>
     <section class="panel"><h2>Aparência</h2><p>O modo automático segue o celular ou computador.</p>
       <div class="seg" id="seg-tema">${[['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Escuro']].map(([v, l]) => `<button type="button" data-v="${v}" aria-pressed="${S.tema === v}">${l}</button>`).join('')}</div></section>
@@ -1255,11 +1297,46 @@ async function restaurar(file) {
   if (j.pecas) { if (!await confirmar(`Importar o backup do sistema anterior (${(j.pecas || []).length} peças, ${(j.vendas || []).length} vendas)?`, { ok: 'Importar' })) return; const r = importarV2(j); renderDados(); return toast(`${r.np} peças e ${r.nv} vendas importadas.`, 'ok'); }
   if (!j.produtos || !j.vendas) return toast('Este arquivo não é um backup do DR Darre.', 'bad');
   if (!await confirmar(`Restaurar o backup de ${j.exportado ? fmtDT(j.exportado) : 'data desconhecida'}? As peças e vendas do arquivo serão juntadas às deste aparelho.`, { ok: 'Restaurar' })) return;
-  j.produtos.forEach(p => { const atual = S.produtos[p.id]; const delta = (+p.qtd || 0) - (atual ? atual.qtd : 0); S.produtos[p.id] = { ...p }; dirty('produtos', p.id); if (delta) addAjuste(p.id, delta, 'Backup restaurado', { tipo: 'carga' }); });
-  j.vendas.forEach(v => { if (!S.vendas[v.id]) { S.vendas[v.id] = { ...v, baixa_estoque: false }; dirty('vendas', v.id); } });
+  await aplicarBackup(j, false); renderDados(); toast('Backup restaurado.', 'ok');
+}
+// aplica um backup (de arquivo ou da nuvem). soFaltando = só recoloca o que não existe neste aparelho, sem mexer no estoque atual
+async function aplicarBackup(j, soFaltando) {
+  let np = 0, nv = 0;
+  (j.produtos || []).forEach(p => {
+    const atual = S.produtos[p.id]; if (soFaltando && atual) return;
+    const delta = (+p.qtd || 0) - (atual ? atual.qtd : 0);
+    S.produtos[p.id] = { ...p }; dirty('produtos', p.id); np++;
+    if (delta) addAjuste(p.id, delta, 'Backup restaurado', { tipo: 'carga' });
+  });
+  (j.vendas || []).forEach(v => { if (!S.vendas[v.id]) { S.vendas[v.id] = { ...v, baixa_estoque: false }; dirty('vendas', v.id); nv++; } });
   (j.movs || []).forEach(m => { if (!S.movs[m.id]) S.movs[m.id] = m; });
-  if (j.config) { S.config.valor = { ...DEF_CFG, ...j.config }; dirty('config', 'loja'); }
-  await salvarJa(); renderDados(); toast('Backup restaurado.', 'ok');
+  if (!soFaltando && j.config && Object.keys(j.config).length) { S.config.valor = { ...DEF_CFG, ...j.config }; dirty('config', 'loja'); }
+  await salvarJa();
+  return { np, nv };
+}
+// cópias automáticas guardadas no Supabase (08h e 18h): lista e restaura
+async function abrirCopiasNuvem() {
+  if (!Cloud.pronto()) return toast('Conecte a nuvem em Ajustes primeiro.', 'warn');
+  if (!navigator.onLine) return toast('Sem internet para buscar as cópias.', 'warn');
+  let lista;
+  try { lista = await Cloud.req('backups?select=id,criado_em&order=criado_em.desc&limit=60'); }
+  catch (e) { return toast(/PGRST205|42P01|does not exist|schema cache/i.test(e.message) ? 'As cópias automáticas ainda não foram ativadas. Rode o script em Ajustes › Cópias automáticas da nuvem.' : 'Não foi possível buscar as cópias: ' + traduzErro(e.message), 'bad'); }
+  abrirDlg(`<div class="dlg-body"><header><h2>Cópias da nuvem</h2><button class="x" type="button" data-close aria-label="Fechar">×</button></header>
+    ${lista && lista.length ? `<p class="muted" style="margin-bottom:12px;font-size:13.5px"><b>Só o que falta</b> recoloca peças e vendas que não existem neste aparelho e não mexe no estoque atual. <b>Tudo</b> também devolve o estoque ao valor daquela data.</p>
+      <ul class="mini">${lista.map(c => `<li><div class="grow"><strong>${fmtDT(c.criado_em)}</strong></div><button class="btn ghost sm" type="button" data-copia="${c.id}" data-modo="falta">Só o que falta</button><button class="btn ghost sm" type="button" data-copia="${c.id}" data-modo="tudo">Tudo</button></li>`).join('')}</ul>`
+      : '<p>Ainda não há cópias. A primeira aparece depois de rodar o script, e as próximas às 08h e às 18h.</p>'}</div>`);
+  dlg.querySelector('ul')?.addEventListener('click', async e => {
+    const b = e.target.closest('[data-copia]'); if (!b) return;
+    const c = lista.find(x => x.id === b.dataset.copia), tudo = b.dataset.modo === 'tudo';
+    if (!await confirmar(tudo ? `Restaurar TUDO da cópia de ${fmtDT(c.criado_em)}? O estoque das peças volta ao valor daquela data.` : `Restaurar da cópia de ${fmtDT(c.criado_em)} só o que não existe neste aparelho?`, { ok: 'Restaurar', perigo: tudo })) return;
+    try {
+      const r = await Cloud.req(`backups?id=eq.${c.id}&select=dados`);
+      if (!r || !r[0] || !r[0].dados) throw new Error('cópia vazia');
+      const x = await aplicarBackup(r[0].dados, !tudo);
+      dlg.close(); renderDados();
+      toast(`Cópia restaurada: ${x.np} ${x.np === 1 ? 'peça' : 'peças'} e ${x.nv} ${x.nv === 1 ? 'venda' : 'vendas'} recolocadas.`, 'ok');
+    } catch (err) { toast('Não foi possível restaurar: ' + traduzErro(err.message), 'bad'); }
+  });
 }
 
 // ---------- ações globais ----------
@@ -1293,6 +1370,9 @@ document.addEventListener('click', async e => {
     case 'sair': if (await confirmar(pendentes() ? `Há ${pendentes()} alterações que ainda não subiram. Desconectando agora, elas ficam só neste aparelho até você entrar de novo. Continuar?` : 'Desconectar este aparelho da nuvem? Os dados continuam salvos aqui.', { ok: 'Desconectar', perigo: !!pendentes() })) { S.cloud = { url: S.cloud.url, key: S.cloud.key, email: S.cloud.email }; persist(); pintarNuvem(); pintarSync(); } break;
     case 'copiar-sql': try { await navigator.clipboard.writeText(SQL); toast('Script copiado. Cole no SQL Editor do Supabase.', 'ok'); } catch { $('.sql').select(); toast('Selecionei o script: use Ctrl + C para copiar.', 'warn'); } break;
     case 'baixar-sql': baixar('drdarre-supabase.sql', SQL, 'text/plain;charset=utf-8'); break;
+    case 'ver-copias': abrirCopiasNuvem(); break;
+    case 'copiar-sql-backup': try { await navigator.clipboard.writeText(SQL_BACKUP); toast('Script copiado. Cole no SQL Editor do Supabase.', 'ok'); } catch { baixar('drdarre-backup-automatico.sql', SQL_BACKUP, 'text/plain;charset=utf-8'); toast('Não consegui copiar. O script foi baixado como arquivo.', 'warn'); } break;
+    case 'baixar-sql-backup': baixar('drdarre-backup-automatico.sql', SQL_BACKUP, 'text/plain;charset=utf-8'); break;
     case 'apagar':
       if (!await confirmar(Cloud.pronto() ? 'Apagar os dados deste aparelho? O que já está na nuvem continua lá e volta quando você conectar de novo.' : 'Apagar TODAS as peças e vendas deste aparelho? Sem nuvem conectada, isso não tem volta. Faça um backup antes.', { ok: 'Apagar dados', perigo: true })) return;
       if (pendentes() && Cloud.pronto() && !await confirmar(`Ainda há ${pendentes()} alterações sem enviar à nuvem. Elas serão perdidas.`, { ok: 'Apagar mesmo assim', perigo: true })) return;
