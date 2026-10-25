@@ -289,8 +289,8 @@ function dadosBackup() {
 }
 async function compartilharBackup() {
   const b = dadosBackup();
-  // alguns celulares só aceitam compartilhar texto: nesse caso o arquivo sai com .txt no fim e a restauração funciona igual
-  const formatos = [{ nome: b.nome, tipo: 'application/json' }, { nome: b.nome + '.txt', tipo: 'text/plain' }];
+  // o Chrome do Android só deixa compartilhar alguns tipos de arquivo (texto sim, .json não): por isso o backup sai como .txt e a restauração lê igual
+  const formatos = [{ nome: b.nome.replace(/\.json$/, '.txt'), tipo: 'text/plain' }];
   let motivo = '';
   if (!navigator.share) motivo = 'este navegador não tem a função de compartilhar';
   else if (!navigator.canShare) motivo = 'este navegador não compartilha arquivos';
