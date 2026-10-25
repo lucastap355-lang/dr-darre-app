@@ -291,20 +291,27 @@ async function compartilharBackup() {
   const b = dadosBackup();
   // alguns celulares só aceitam compartilhar texto: nesse caso o arquivo sai com .txt no fim e a restauração funciona igual
   const formatos = [{ nome: b.nome, tipo: 'application/json' }, { nome: b.nome + '.txt', tipo: 'text/plain' }];
-  try {
-    for (const f of formatos) {
-      const arq = new File([b.texto], f.nome, { type: f.tipo });
-      if (navigator.canShare && navigator.canShare({ files: [arq] })) {
-        await navigator.share({ files: [arq], title: 'Backup DR Darre' });
-        toast('Backup enviado para o app que você escolheu.', 'ok'); return;
+  let motivo = '';
+  if (!navigator.share) motivo = 'este navegador não tem a função de compartilhar';
+  else if (!navigator.canShare) motivo = 'este navegador não compartilha arquivos';
+  else {
+    try {
+      for (const f of formatos) {
+        const arq = new File([b.texto], f.nome, { type: f.tipo });
+        if (navigator.canShare({ files: [arq] })) {
+          await navigator.share({ files: [arq], title: 'Backup DR Darre' });
+          toast('Backup enviado para o app que você escolheu.', 'ok'); return;
+        }
       }
+      motivo = 'o navegador não aceitou compartilhar este tipo de arquivo';
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;   // a pessoa fechou a janela de compartilhar
+      console.warn('Compartilhar falhou', e);
+      motivo = (e && e.name ? e.name : 'erro') + (e && e.message ? ': ' + e.message : '');
     }
-  } catch (e) {
-    if (e && e.name === 'AbortError') return;   // a pessoa fechou a janela de compartilhar
-    console.warn('Compartilhar falhou', e);
   }
   baixar(b.nome, b.texto, 'application/json');
-  toast('Este aparelho não abre o compartilhamento. O backup foi baixado no celular.', 'warn');
+  toast(`Não abriu o compartilhamento (${motivo}). O backup foi baixado no celular.`, 'warn');
 }
 // atualização forçada: apaga só os arquivos guardados do aplicativo (nunca as peças e vendas) e baixa tudo de novo
 async function forcarAtualizacao() {
