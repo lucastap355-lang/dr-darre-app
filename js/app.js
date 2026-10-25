@@ -247,7 +247,8 @@ function pintarSync(forcar) {
   else if (n) { s = 'pend'; txt = `${n} ${n === 1 ? 'alteração' : 'alterações'} a enviar`; }
   else { s = 'ok'; txt = 'Salvo na nuvem'; }
   el.dataset.s = s; el.querySelector('span').textContent = txt;
-  el.title = S.lastSync ? 'Última sincronização: ' + fmtDT(S.lastSync) : 'Sincronização';
+  el.setAttribute('aria-label', txt);   // sem texto na tela: só a cor; o texto fica para leitores de tela e para o toque longo
+  el.title = txt + (S.lastSync ? ' · última sincronização: ' + fmtDT(S.lastSync) : '');
 }
 
 // ---------- avisos e diálogos ----------
@@ -283,7 +284,7 @@ function baixar(nome, conteudo, tipo) {
 }
 
 // ---------- navegação ----------
-const VISTAS = ['inicio', 'vender', 'produtos', 'estoque', 'vendas', 'ajustes'];
+const VISTAS = ['inicio', 'vender', 'produtos', 'estoque', 'vendas', 'receber', 'ajustes'];
 let vista = 'inicio';
 function mostrar() {
   vista = VISTAS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'inicio';
@@ -302,6 +303,7 @@ function renderDados() {
   if (vista === 'produtos') rProdutos();
   if (vista === 'estoque') rEstoque();
   if (vista === 'vendas') rVendas();
+  if (vista === 'receber') rReceber();
   if (vista === 'ajustes') pintarNuvem();
 }
 function pintarMarca() { $('#brand-nome').textContent = cfg().nome || 'DR Darre'; $('#brand-sub').textContent = cfg().subtitulo || ''; document.title = (cfg().nome || 'DR Darre') + ' – Sistema de vendas'; }
@@ -554,6 +556,8 @@ function finalizar() {
 // pagamentos de uma venda (vendas antigas têm só uma forma)
 const pagsDe = v => (v.pagamentos && v.pagamentos.length) ? v.pagamentos : [{ forma: v.forma, valor: v.total, parcelas: v.parcelas || 1 }];
 const dividida = v => !!(v.pagamentos && v.pagamentos.length > 1);
+const FCLASSE = { 'Pix': 'pix', 'Dinheiro': 'din', 'Débito': 'deb', 'Crédito': 'cre' };
+const tagsPg = v => pagsDe(v).map(p => `<span class="tag fp fp-${FCLASSE[p.forma] || 'din'}">${esc(p.forma)}${p.forma === 'Crédito' && p.parcelas > 1 ? ' ' + p.parcelas + 'x' : ''}${dividida(v) ? ' ' + money(p.valor) : ''}</span>`).join(' ');
 const rotuloPg = v => pagsDe(v).map(p => p.forma + (p.forma === 'Crédito' && p.parcelas > 1 ? ' ' + p.parcelas + 'x' : '')).join(' + ');
 // venda: recibo, WhatsApp, impressão e cancelamento
 function reciboHTML(v) {
@@ -666,7 +670,6 @@ function abrirProduto(id) {
       <label>Cor<input name="cor" list="dl-cores" required value="${esc(p?.cor || '')}" placeholder="Ex.: Preto"></label>
       <label>Preço de venda<input name="preco" inputmode="decimal" required value="${p ? String(p.preco).replace('.', ',') : ''}" placeholder="0,00"></label>
       <label>Custo <em>(opcional)</em><input name="custo" inputmode="decimal" value="${p?.custo != null ? String(p.custo).replace('.', ',') : ''}" placeholder="0,00"></label>
-      <label>Avisar quando restar<input name="estoque_min" type="number" min="0" inputmode="numeric" value="${p ? p.estoque_min ?? 2 : 1}"></label>
       ${p ? `<label>Tamanho<select name="tamanho">${tams.map(t => `<option ${t === p.tamanho ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
              <label>Estoque atual<input name="qtd" type="number" inputmode="numeric" value="${p.qtd}"></label>
              <label>Código<input value="${esc(p.codigo)}" readonly></label>` : ''}
@@ -688,7 +691,7 @@ function abrirProduto(id) {
   f.addEventListener('submit', e => {
     e.preventDefault();
     const tipo = f.tipo.value.trim(), cor = f.cor.value.trim(), preco = r2(parseNum(f.preco.value));
-    const custo = f.custo.value.trim() ? r2(parseNum(f.custo.value)) : null, emin = Math.max(0, Math.trunc(+f.estoque_min.value || 0));
+    const custo = f.custo.value.trim() ? r2(parseNum(f.custo.value)) : null, emin = p ? (p.estoque_min ?? 1) : 1;
     if (!tipo) return toast('Informe o tipo da peça.', 'warn'), f.tipo.focus();
     if (!cor) return toast('Informe a cor.', 'warn'), f.cor.focus();
     if (!(preco > 0)) return toast('Informe o preço de venda.', 'warn'), f.preco.focus();
@@ -988,7 +991,6 @@ function rVendas() {
       <div class="kpi"><span>Ticket médio</span><strong>${money(vs.length ? fatF / vs.length : 0)}</strong></div>
       <div class="kpi"><span>Peças vendidas</span><strong>${pcs}</strong></div>
       <div class="kpi"><span>Descontos dados</span><strong>${money(desc)}</strong></div>
-      ${comCusto.length ? `<div class="kpi"><span>Lucro estimado</span><strong>${money(lucro)}</strong></div>` : ''}
       ${devs.length ? `<div class="kpi"><span>Devoluções</span><strong>${money(devT)}</strong><small class="muted">${sum(devs.map(m => m.delta))} ${sum(devs.map(m => m.delta)) === 1 ? 'peça' : 'peças'}</small></div>` : ''}
     </div>
     ${vs.length ? `<div class="charts">
@@ -1004,7 +1006,7 @@ function rVendas() {
     <h2 style="margin-top:6px">${todas.length ? `${todas.length} ${todas.length === 1 ? 'venda' : 'vendas'} no período${nc ? `, ${nc} ${nc === 1 ? 'cancelada' : 'canceladas'}` : ''}` : ''}</h2>
     ${todas.length ? `<div class="vlist">${todas.slice(0, 500).map(v => `<button class="vrow ${v.cancelada ? 'cancel' : ''}" type="button" data-venda="${v.id}">
         <span><strong>${esc(v.cliente_nome || resumoItens(v))}</strong><span class="meta"><span>${fmtDT(v.data)}</span><span>${sum(v.itens.map(i => i.qtd))} ${sum(v.itens.map(i => i.qtd)) === 1 ? 'peça' : 'peças'}</span>${v.vendedor ? `<span>${esc(v.vendedor)}</span>` : ''}<span class="code">${esc(v.numero)}</span></span></span>
-        <span>${v.cancelada ? '<span class="tag bad">cancelada</span>' : `<span class="tag">${esc(rotuloPg(v))}</span>`}</span>
+        <span>${v.cancelada ? '<span class="tag bad">cancelada</span>' : tagsPg(v)}</span>
         <span class="vt">${money(v.total)}</span></button>`).join('')}</div>`
       : `<div class="empty panel"><strong>Nenhuma venda neste período</strong>Escolha outro período ou registre uma venda na tela Vender.</div>`}`;
 }
@@ -1210,6 +1212,72 @@ async function restaurar(file) {
   (j.movs || []).forEach(m => { if (!S.movs[m.id]) S.movs[m.id] = m; });
   if (j.config) { S.config.valor = { ...DEF_CFG, ...j.config }; dirty('config', 'loja'); }
   await salvarJa(); renderDados(); toast('Backup restaurado.', 'ok');
+}
+
+// ---------- aba Receber: cartão parcelado e histórico mês a mês ----------
+const fmtD = s => new Date(s + 'T12:00:00').toLocaleDateString('pt-BR');
+function somaMeses(d, n) { const x = new Date(d.getFullYear(), d.getMonth() + n, 1, 12); const ult = new Date(x.getFullYear(), x.getMonth() + 1, 0).getDate(); x.setDate(Math.min(d.getDate(), ult)); return x; }
+const nomeMes = k => { const [y, m] = k.split('-'), s = new Date(+y, +m - 1, 1).toLocaleDateString('pt-BR', +y === new Date().getFullYear() ? { month: 'long' } : { month: 'long', year: 'numeric' }); return s[0].toUpperCase() + s.slice(1); };
+// crédito parcelado: a 1ª parcela cai 30 dias depois da venda e as outras de mês em mês
+function itensReceber() {
+  const out = [];
+  validas().forEach(v => {
+    const cli = v.cliente_nome || resumoItens(v);
+    pagsDe(v).forEach(p => {
+      if (p.forma !== 'Crédito' || !(p.parcelas > 1)) return;
+      const cent = Math.round(p.valor * 100), base = Math.floor(cent / p.parcelas);
+      for (let k = 1; k <= p.parcelas; k++) out.push({ vid: v.id, cli, compra: v.data, resumo: resumoItens(v), n: k, de: p.parcelas, valor: (k === p.parcelas ? cent - base * (p.parcelas - 1) : base) / 100, data: dayKey(somaMeses(new Date(v.data), k)) });
+    });
+  });
+  return out;
+}
+function linhaItem(x) {
+  return `<li><button class="grow" type="button" data-venda="${x.vid}"><strong>${esc(x.cli)}</strong><span class="meta">${x.resumo && x.resumo !== x.cli ? `<span>${esc(x.resumo)}</span>` : ''}<span>Compra de ${new Date(x.compra).toLocaleDateString('pt-BR')}</span></span><span class="meta"><span>Parcela ${x.n}/${x.de}</span><span>previsto ${fmtD(x.data)}</span></span></button><b class="num">${money(x.valor)}</b></li>`;
+}
+function secaoReceber(titulo, lista) {
+  const meses = {}; lista.forEach(x => { const k = x.data.slice(0, 7); (meses[k] = meses[k] || []).push(x); });
+  const ks = Object.keys(meses).sort(), tot = k => r2(sum(meses[k].map(x => x.valor)));
+  return `<section class="rsec"><div class="rsec-h"><span class="tag fp fp-cre">${titulo}</span><b class="num">${money(sum(lista.map(x => x.valor)))}</b></div>
+    ${ks.length ? ks.map(k => `<details class="mes2"><summary><span>${nomeMes(k)}</span><b class="num">${money(tot(k))}</b></summary><ul class="mini">${meses[k].sort((p, q) => p.data.localeCompare(q.data)).map(linhaItem).join('')}</ul></details>`).join('') : '<p class="muted" style="padding:10px 4px">Nada a receber.</p>'}</section>`;
+}
+// Pix, Dinheiro, Débito e Crédito à vista entram no dia da venda; crédito parcelado entra mês a mês
+function historicoMensal() {
+  const hj = dayKey(new Date()), H = {};
+  const get = k => (H[k] = H[k] || { vendeu: 0, entrou: 0, de: {} });
+  const entra = (kEntrou, kVenda, valor) => { const h = get(kEntrou); h.entrou += valor; h.de[kVenda] = (h.de[kVenda] || 0) + valor; };
+  validas().forEach(v => {
+    const kv = dayKey(new Date(v.data)).slice(0, 7);
+    get(kv).vendeu += v.total;
+    pagsDe(v).forEach(p => {
+      if (p.forma === 'Crédito' && p.parcelas > 1) {
+        const cent = Math.round(p.valor * 100), base = Math.floor(cent / p.parcelas);
+        for (let k = 1; k <= p.parcelas; k++) { const d = dayKey(somaMeses(new Date(v.data), k)); if (d < hj) entra(d.slice(0, 7), kv, (k === p.parcelas ? cent - base * (p.parcelas - 1) : base) / 100); }
+      } else entra(kv, kv, +p.valor || 0);
+    });
+  });
+  return H;
+}
+function historicoHTML() {
+  const H = historicoMensal(), ks = Object.keys(H).sort().reverse(); if (!ks.length) return '';
+  const card = k => { const h = H[k], de = Object.keys(h.de).sort();
+    return `<div class="hist"><h3>${nomeMes(k)}</h3>
+      <div class="hist-row"><span>Vendeu</span><b>${money(r2(h.vendeu))}</b></div>
+      <div class="hist-row ok"><span>Entrou de dinheiro</span><b>${money(r2(h.entrou))}</b></div>
+      ${h.entrou ? `<div class="hist-de"><small>Esse dinheiro veio de vendas de:</small>${de.map(o => `<div><span>${nomeMes(o)}</span><span>${money(r2(h.de[o]))}</span></div>`).join('')}</div>` : ''}</div>`; };
+  return `<section class="rsec"><div class="rsec-h"><h2 style="font-size:22px">Mês a mês</h2></div>
+    <p class="muted" style="font-size:13px;margin:4px 0 12px">Quanto você vendeu e quanto dinheiro entrou de verdade em cada mês.</p>
+    ${ks.slice(0, 3).map(card).join('')}
+    ${ks.length > 3 ? `<details class="mes2"><summary><span>Meses anteriores</span></summary>${ks.slice(3).map(card).join('')}</details>` : ''}</section>`;
+}
+function rReceber() {
+  const hj = dayKey(new Date()), mk = hj.slice(0, 7), fut = itensReceber().filter(x => x.data >= hj);
+  const noMes = r2(sum(fut.filter(x => x.data.slice(0, 7) === mk).map(x => x.valor)));
+  $('#v-receber').innerHTML = `
+    <div class="vhead"><h1 class="h1">A receber</h1></div>
+    <div class="recebe-topo"><span>Vai entrar neste mês</span><strong>${money(noMes)}</strong></div>
+    ${secaoReceber('Cartão', fut)}
+    ${historicoHTML()}
+    <p class="muted" style="font-size:13px;margin-top:16px">Cartão: previsão de 30 dias depois da venda para a 1ª parcela e de mês em mês para as demais.</p>`;
 }
 
 // ---------- ações globais ----------
