@@ -282,6 +282,47 @@ function baixar(nome, conteudo, tipo) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([conteudo], { type: tipo })); a.download = nome;
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
+// backup: abre a janela de compartilhar do celular (Google Drive, WhatsApp, e-mail…); se o aparelho não permitir, baixa o arquivo
+function dadosBackup() {
+  return { nome: `backup-drdarre-${dayKey(new Date())}.json`,
+    texto: JSON.stringify({ sistema: 'DR Darre', versao: 3, exportado: nowISO(), produtos: Object.values(S.produtos), vendas: Object.values(S.vendas), movs: Object.values(S.movs), config: cfg() }) };
+}
+async function compartilharBackup() {
+  const b = dadosBackup();
+  // alguns celulares só aceitam compartilhar texto: nesse caso o arquivo sai com .txt no fim e a restauração funciona igual
+  const formatos = [{ nome: b.nome, tipo: 'application/json' }, { nome: b.nome + '.txt', tipo: 'text/plain' }];
+  try {
+    for (const f of formatos) {
+      const arq = new File([b.texto], f.nome, { type: f.tipo });
+      if (navigator.canShare && navigator.canShare({ files: [arq] })) {
+        await navigator.share({ files: [arq], title: 'Backup DR Darre' });
+        toast('Backup enviado para o app que você escolheu.', 'ok'); return;
+      }
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;   // a pessoa fechou a janela de compartilhar
+    console.warn('Compartilhar falhou', e);
+  }
+  baixar(b.nome, b.texto, 'application/json');
+  toast('Este aparelho não abre o compartilhamento. O backup foi baixado no celular.', 'warn');
+}
+// atualização forçada: apaga só os arquivos guardados do aplicativo (nunca as peças e vendas) e baixa tudo de novo
+async function forcarAtualizacao() {
+  if (!navigator.onLine) return toast('Sem internet. Conecte-se para baixar a versão nova.', 'warn');
+  if (!await confirmar('Baixar de novo todos os arquivos do aplicativo? Suas peças e vendas não são apagadas.', { ok: 'Atualizar agora' })) return;
+  toast('Baixando a versão nova…');
+  try {
+    await salvarJa();
+    const r = await fetch('sw.js?x=' + Date.now(), { cache: 'no-store' });   // confirma que o servidor responde antes de mexer em qualquer coisa
+    if (!r.ok) throw new Error(r.status);
+  } catch { return toast('Não consegui falar com o servidor. Nada foi alterado. Tente de novo com internet melhor.', 'bad'); }
+  try {
+    if ('serviceWorker' in navigator) for (const reg of await navigator.serviceWorker.getRegistrations()) await reg.unregister();
+    if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
+  } catch (e) { console.warn(e); }
+  try { await Promise.all(['./', 'index.html', 'css/estilo.css', 'js/app.js', 'vendor/qrcode.min.js', 'manifest.webmanifest', 'sw.js'].map(u => fetch(u, { cache: 'reload' }).catch(() => {}))); } catch {}
+  location.replace(location.pathname + '?v=' + Date.now() + location.hash);
+}
 
 // ---------- navegação ----------
 const VISTAS = ['inicio', 'vender', 'produtos', 'estoque', 'vendas', 'ajustes'];
@@ -1128,12 +1169,13 @@ function rAjustes() {
       <div class="seg" id="seg-tema">${[['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Escuro']].map(([v, l]) => `<button type="button" data-v="${v}" aria-pressed="${S.tema === v}">${l}</button>`).join('')}</div></section>
     <section class="panel"><h2>Cópias e planilhas</h2><p>O backup guarda peças, vendas e ajustes em um arquivo que pode ser restaurado em qualquer aparelho.</p>
       <div class="btns">
-        <button class="btn ghost" type="button" data-act="backup">Baixar backup</button>
+        <button class="btn primary" type="button" data-act="backup">Salvar backup (Drive, WhatsApp…)</button>
+        <button class="btn ghost" type="button" data-act="backup-baixar">Baixar no aparelho</button>
         <button class="btn ghost" type="button" data-act="restaurar">Restaurar backup</button>
         <button class="btn ghost" type="button" data-act="csv-estoque">Planilha do estoque</button>
         <button class="btn ghost" type="button" data-act="csv-todas">Planilha de todas as vendas</button>
       </div>
-      <input type="file" id="arq-backup" accept=".json,application/json" hidden>
+      <input type="file" id="arq-backup" accept=".json,.txt,application/json,text/plain" hidden>
       <div class="btns" style="margin-top:22px"><button class="btn danger" type="button" data-act="apagar">Apagar dados deste aparelho</button></div></section>
   </div>`;
   pintarNuvem(); pintarApp();
@@ -1236,7 +1278,9 @@ document.addEventListener('click', async e => {
     case 'csv-vendas': { const l = vendasFiltradas(true); if (!l.length) return toast('Não há vendas no período escolhido.', 'warn'); baixar(`vendas-${hoje}.csv`, csvVendas(l), 'text/csv;charset=utf-8'); break; }
     case 'csv-todas': baixar(`vendas-completo-${hoje}.csv`, csvVendas(Object.values(S.vendas).sort((a, b) => b.data.localeCompare(a.data))), 'text/csv;charset=utf-8'); break;
     case 'csv-estoque': baixar(`estoque-${hoje}.csv`, csvEstoque(), 'text/csv;charset=utf-8'); break;
-    case 'backup': baixar(`backup-drdarre-${hoje}.json`, JSON.stringify({ sistema: 'DR Darre', versao: 3, exportado: nowISO(), produtos: Object.values(S.produtos), vendas: Object.values(S.vendas), movs: Object.values(S.movs), config: cfg() }), 'application/json'); toast('Backup baixado.', 'ok'); break;
+    case 'backup': compartilharBackup(); break;
+    case 'backup-baixar': { const b = dadosBackup(); baixar(b.nome, b.texto, 'application/json'); toast('Backup baixado.', 'ok'); break; }
+    case 'atualizar-app': forcarAtualizacao(); break;
     case 'restaurar': $('#arq-backup').click(); break;
     case 'sync': sync(true); break;
     case 'sair': if (await confirmar(pendentes() ? `Há ${pendentes()} alterações que ainda não subiram. Desconectando agora, elas ficam só neste aparelho até você entrar de novo. Continuar?` : 'Desconectar este aparelho da nuvem? Os dados continuam salvos aqui.', { ok: 'Desconectar', perigo: !!pendentes() })) { S.cloud = { url: S.cloud.url, key: S.cloud.key, email: S.cloud.email }; persist(); pintarNuvem(); pintarSync(); } break;
@@ -1295,7 +1339,11 @@ function pintarApp() {
   else if (ehIOS()) corpo = `<p>No iPhone, instale pelo Safari:</p><ol class="steps"><li>Toque no botão <b>Compartilhar</b> (o quadrado com a seta para cima).</li><li>Escolha <b>Adicionar à Tela de Início</b>.</li><li>Toque em <b>Adicionar</b>.</li></ol>`;
   else corpo = `<p>No Android, abra o menu do Chrome (os três pontinhos) e toque em <b>Instalar aplicativo</b> ou <b>Adicionar à tela inicial</b>.</p>`;
   const fixo = armazenamentoFixo === true ? 'Os dados deste aparelho estão protegidos contra limpeza automática do navegador.' : armazenamentoFixo === false ? 'O navegador pode apagar os dados deste aparelho se faltar espaço. Instale o aplicativo ou conecte a nuvem para proteger.' : '';
-  el.innerHTML = `<h2>Aplicativo no celular</h2>${corpo}${fixo ? `<p style="margin-top:12px;font-size:13px">${fixo}</p>` : ''}`;
+  el.innerHTML = `<h2>Aplicativo no celular</h2>${corpo}${fixo ? `<p style="margin-top:12px;font-size:13px">${fixo}</p>` : ''}
+    <div class="btns"><button class="btn ghost" type="button" data-act="atualizar-app">Atualizar aplicativo agora</button></div>
+    <p style="margin-top:10px;font-size:13px">Baixa de novo todos os arquivos do sistema, mesmo que o número da versão não tenha mudado. Suas peças e vendas continuam salvas.</p>
+    <p id="ver-app" style="font-size:13px"></p>`;
+  if (window.caches) caches.keys().then(ks => { const v = ks.find(k => k.startsWith('prdarre-')), e = $('#ver-app'); if (e && v) e.textContent = 'Versão instalada: ' + v.replace('prdarre-', ''); }).catch(() => {});
 }
 async function protegerArmazenamento() {
   try { if (navigator.storage && navigator.storage.persist) armazenamentoFixo = (await navigator.storage.persisted()) || (await navigator.storage.persist()); } catch {}
@@ -1315,6 +1363,7 @@ function registrarSW() {
 
 // ---------- início ----------
 (async function iniciar() {
+  if (location.search.startsWith('?v=')) history.replaceState(null, '', location.pathname + location.hash);   // limpa o ?v= da atualização forçada
   const salvo = await KV.get('state');
   if (salvo && salvo.v === 3) {
     const base = novoEstado();
