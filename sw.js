@@ -2,7 +2,7 @@
    Guarda os arquivos do sistema no aparelho para o app abrir sem internet.
    Com internet, o sistema sempre busca a versão mais nova primeiro (e só usa a guardada se a internet falhar ou demorar).
    Ao publicar uma versão nova, troque o número em VERSAO. */
-const VERSAO = 'prdarre-3.20.0';
+const VERSAO = 'prdarre-3.22.0';
 const ESPERA_MS = 4000;   // com internet lenta, abre a versão guardada depois de 4 segundos
 let lentoAte = 0;           // depois de uma espera estourada, os próximos arquivos usam o guardado na hora (por 30 s)
 const ARQUIVOS = [
