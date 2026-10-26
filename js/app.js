@@ -47,6 +47,18 @@ const KV = {
     try { const db = await this.open(); await new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); }
     catch { try { localStorage.setItem('prd:' + k, JSON.stringify(v)); } catch { toast('Sem espaço para salvar neste aparelho. Faça um backup.', 'bad'); } }
   },
+  // grava só se nenhuma outra janela do app gravou depois desta (confere e grava na mesma transação, sem brecha)
+  async setSeguro(k, v, esperado) {
+    try {
+      const db = await this.open();
+      return await new Promise((res, rej) => {
+        const tx = db.transaction('kv', 'readwrite'), st = tx.objectStore('kv'); let r = 'ok';
+        const q = st.get(k);
+        q.onsuccess = () => { const a = q.result; if (a && a.__c && a.__c !== esperado) { r = 'conflito'; return; } st.put(v, k); };
+        tx.oncomplete = () => res(r); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error);
+      });
+    } catch { await this.set(k, v); return 'ok'; }
+  },
   async del(k) { try { const db = await this.open(); await new Promise(res => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').delete(k); tx.oncomplete = res; tx.onerror = res; }); } catch {} localStorage.removeItem('prd:' + k); }
 };
 
@@ -69,8 +81,71 @@ function novoEstado() {
     cloud: null, lastUrl: null, lastSync: null, tema: 'auto'
   };
 }
-const persist = debounce(() => KV.set('state', S), 250);
-function salvarJa() { return KV.set('state', S); }
+// ---- várias janelas do app no mesmo celular (ícone + navegador, aba esquecida em segundo plano) ----
+// Cada janela guarda os dados na memória. Antes, a que gravava por último apagava o que a outra tinha feito
+// (venda feita numa janela sumia na outra, e o estoque voltava). Agora toda gravação leva um carimbo:
+// se outra janela gravou antes, esta janela junta os dados dela com os seus em vez de sobrescrever.
+const MEU_ID = uid();
+let carimbo = null, fila = Promise.resolve();
+function mesclar(A, M) {   // A = o que a outra janela gravou (mais novo); M = o que esta janela tem na memória
+  const N = JSON.parse(JSON.stringify(A)), base = novoEstado();
+  ['produtos', 'vendas', 'ajustes', 'movs'].forEach(k => { N[k] = N[k] || {}; });
+  N.outbox = N.outbox || {}; N.cursor = { ...base.cursor, ...(N.cursor || {}) };
+  Object.keys(base.outbox).forEach(t => { N.outbox[t] = { ...(N.outbox[t] || {}) }; });
+  const mo = M.outbox || {}, novos = new Set(), clone = o => JSON.parse(JSON.stringify(o));
+  Object.values(M.produtos || {}).forEach(p => {
+    const a = N.produtos[p.id];
+    if (!a) { N.produtos[p.id] = clone(p); novos.add(p.id); }
+    else if ((mo.produtos || {})[p.id]) N.produtos[p.id] = { ...clone(p), qtd: a.qtd };
+  });
+  const mexe = (i, sinal) => { const p = N.produtos[i.produto_id]; if (p && !novos.has(p.id)) p.qtd += sinal * i.qtd; };
+  Object.values(M.vendas || {}).forEach(v => {
+    const a = N.vendas[v.id];
+    if (!a) { N.vendas[v.id] = clone(v); if (!v.cancelada && v.baixa_estoque !== false) v.itens.forEach(i => mexe(i, -1)); }
+    else if (v.cancelada && !a.cancelada) { a.cancelada = true; v.itens.forEach(i => mexe(i, 1)); }
+  });
+  Object.values(M.ajustes || {}).forEach(a => {
+    if (N.ajustes[a.id] || N.movs[a.id]) return;
+    N.ajustes[a.id] = { ...a }; N.movs[a.id] = { ...a };
+    const p = N.produtos[a.produto_id]; if (p && !novos.has(p.id)) p.qtd += a.delta;
+  });
+  Object.values(M.movs || {}).forEach(m => { if (!N.movs[m.id]) N.movs[m.id] = { ...m }; });
+  Object.keys(mo).forEach(t => Object.keys(mo[t] || {}).forEach(id => { N.outbox[t] = N.outbox[t] || {}; N.outbox[t][id] = Math.max(N.outbox[t][id] || 0, mo[t][id]); }));
+  Object.keys(N.cursor).forEach(t => { const x = N.cursor[t], y = (M.cursor || {})[t]; N.cursor[t] = (!x || !y) ? '' : (x < y ? x : y); });   // baixa de novo da nuvem a partir do mais antigo
+  if (M.cloud && (!N.cloud || (M.cloud.exp || 0) > (N.cloud.exp || 0))) N.cloud = clone(M.cloud);
+  if ((mo.config || {}).loja) N.config = clone(M.config);
+  N.vendedor = M.vendedor; N.vendedorOutro = M.vendedorOutro; N.tema = M.tema;
+  N.lastSync = [N.lastSync, M.lastSync].filter(Boolean).sort().pop() || null;
+  return N;
+}
+async function juntarJanelas() {
+  const A = await KV.get('state');
+  if (!A || !A.__c || A.__c === carimbo) return false;
+  S = mesclar(A, S); carimbo = A.__c;
+  try { renderDados(); } catch {}
+  return true;
+}
+function gravar() {
+  fila = fila.then(async () => {
+    for (let t = 0; t < 3; t++) {
+      const c = MEU_ID + ':' + Date.now() + ':' + t;
+      const r = await KV.setSeguro('state', { ...S, __c: c }, carimbo);
+      if (r === 'ok') { carimbo = c; S.__c = c; return true; }
+      await juntarJanelas();
+    }
+    return false;
+  }).catch(() => false);
+  return fila;
+}
+// confere se outra janela mexeu nos dados; se sim, junta (usado ao voltar para o app e antes de cada venda)
+async function conferirJanela() {
+  if (!await juntarJanelas()) return false;
+  await gravar();
+  toast('Esta janela estava desatualizada. Juntei com os dados mais novos.', 'warn');
+  return true;
+}
+const persist = debounce(() => gravar(), 250);
+function salvarJa() { return gravar(); }
 function dirty(t, id) { S.outbox[t][id] = (S.outbox[t][id] || 0) + 1; persist(); pintarSync(); agendarSync(); }
 // cada ajuste de estoque vira uma movimentação: vai para a nuvem (S.ajustes, apagado após o envio)
 // e fica no histórico deste aparelho (S.movs, usado na aba Estoque e na consulta)
@@ -210,7 +285,7 @@ async function sync(manual) {
     for (const t of TABELAS) await enviar(t);           // produtos → ajustes → vendas → config
     for (const t of ['produtos', 'vendas', 'config', 'ajustes']) await receber(t);
     S.lastSync = nowISO(); S.cloud.erro = null; persist();
-    renderDados();
+    renderDados(); avisarNegativos();
     if (manual) toast('Tudo sincronizado com a nuvem.', 'ok');
   } catch (e) {
     console.error(e);
@@ -222,6 +297,15 @@ async function sync(manual) {
   }
 }
 const agendarSync = debounce(() => sync(), 1500);
+// estoque negativo = a mesma peça foi vendida em dois aparelhos (ou a venda foi lançada duas vezes). Avisa assim que aparece.
+let negVisto = '';
+function avisarNegativos() {
+  const neg = ativos().filter(p => p.qtd < 0), chave = neg.map(p => p.id + ':' + p.qtd).sort().join('|');
+  if (!neg.length) { negVisto = ''; return; }
+  if (chave === negVisto) return;
+  negVisto = chave;
+  toast(`Estoque negativo: ${neg.slice(0, 2).map(p => nomeP(p) + ' ' + p.tamanho + ' (' + p.qtd + ')').join(', ')}${neg.length > 2 ? ' e mais ' + (neg.length - 2) : ''}. Veja a venda repetida em Vendas.`, 'bad', { label: 'Ver', fn: () => ir('inicio') });
+}
 function traduzErro(m) {
   if (/PGRST204|42703|column .* does not exist|Could not find the '/i.test(m)) return 'o banco da nuvem precisa da atualização desta versão (vendedora e devoluções). Rode de novo o script SQL (Ajustes › Como preparar a nuvem).';
   if (/PGRST205|42P01|does not exist|schema cache/i.test(m)) return 'as tabelas não existem no Supabase. Rode o script SQL (Ajustes › Como preparar a nuvem).';
@@ -379,6 +463,7 @@ function rInicio() {
   const mv = vs.filter(v => new Date(v.data) >= ini);
   const prods = ativos(), est = sum(prods.map(p => Math.max(0, p.qtd)));
   const baixo = prods.filter(p => p.qtd <= (p.estoque_min || 0)).sort((a, b) => a.qtd - b.qtd);
+  const neg = prods.filter(p => p.qtd < 0);
   const ult = Object.values(S.vendas).sort((a, b) => b.data.localeCompare(a.data)).slice(0, 6);
   $('#v-inicio').innerHTML = `
     <div class="hero">
@@ -392,6 +477,9 @@ function rInicio() {
       <div><span>Ticket médio hoje</span><strong>${money(hv.length ? fat / hv.length : 0)}</strong></div>
       <div><span>Peças em estoque</span><strong>${est}</strong><small>${prods.length} ${prods.length === 1 ? 'item cadastrado' : 'itens cadastrados'}</small></div>
     </div>
+    ${neg.length ? `<section class="panel" style="margin-bottom:14px;border:1px solid var(--bad)"><h2 style="color:var(--bad)">Atenção: estoque negativo</h2>
+      <p class="muted" style="margin-bottom:8px">A mesma peça foi vendida mais vezes do que tinha. Pode ser venda lançada duas vezes ou vendida em dois celulares. Confira a prateleira e cancele a venda repetida em Vendas.</p>
+      <ul class="mini">${neg.map(p => `<li><button class="grow" type="button" data-edit="${p.id}"><strong>${esc(nomeP(p))}</strong><span class="meta"><span>${esc(p.tamanho)}</span><span>${esc(p.cor)}</span></span></button><span class="tag bad">${p.qtd}</span></li>`).join('')}</ul></section>` : ''}
     <div class="two">
       <section class="panel"><h2>Estoque acabando</h2>
         ${baixo.length ? `<ul class="mini">${baixo.slice(0, 7).map(p => `<li><button class="grow" type="button" data-edit="${p.id}"><strong>${esc(nomeP(p))}</strong><span class="meta"><span>${esc(p.tamanho)}</span><span>${esc(p.cor)}</span></span></button><span class="tag ${p.qtd <= 0 ? 'bad' : 'warn'}">${p.qtd <= 0 ? 'esgotado' : p.qtd + ' un'}</span></li>`).join('')}</ul>
@@ -571,11 +659,52 @@ function limparVenda() {
 }
 $('#btn-limpar').addEventListener('click', async () => { if (!carrinho.length || await confirmar('Limpar os itens desta venda?', { ok: 'Limpar venda', perigo: true })) limparVenda(); });
 $('#btn-fin').addEventListener('click', finalizar);
-function finalizar() {
+// TRAVA DE ESTOQUE (v3.21): antes de fechar a venda, o aparelho sobe o que ainda não enviou e baixa o estoque atual da nuvem.
+// Assim não vende uma peça que outro celular já vendeu. Se não der para conferir (sem internet / sem login), pede confirmação.
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+let finalizando = false;
+async function garantirEstoque() {
+  const comNuvem = !!(S.cloud && S.cloud.url);
+  let conferido = !comNuvem;                                   // sem nuvem: só este aparelho, nada a conferir
+  if (comNuvem && Cloud.pronto() && navigator.onLine) {
+    try {
+      const t0 = Date.now();
+      for (let k = 0; sincronizando && k < 24; k++) await dormir(250);        // espera uma sincronização já em andamento
+      const terminou = await Promise.race([sync().then(() => true), dormir(6000).then(() => false)]);
+      conferido = terminou && !S.cloud.erro && !!S.lastSync && new Date(S.lastSync).getTime() >= t0;
+    } catch (e) { conferido = false; }
+  }
+  rCarrinho();                                                  // tira do carrinho peça apagada e atualiza preços/estoque na tela
+  if (!carrinho.length) { toast('As peças desta venda não existem mais. Confira o estoque.', 'warn'); return false; }
+  const sem = carrinho.filter(i => { const p = S.produtos[i.produto_id]; return !p || p.deleted || i.qtd > p.qtd; });
+  if (sem.length) {
+    const p = S.produtos[sem[0].produto_id];
+    toast(p ? `Sem estoque: ${nomeP(p)} ${p.tamanho}. ${p.qtd <= 0 ? 'Não há peças disponíveis' : 'Só há ' + p.qtd}${comNuvem && conferido ? ' (estoque conferido agora na nuvem)' : ''}. Venda não feita.` : 'Uma peça desta venda não existe mais.', 'bad');
+    return false;
+  }
+  if (!conferido) {
+    return await confirmar('Este aparelho não conseguiu conferir o estoque com a nuvem (sem internet ou sem entrar na nuvem). Se outro celular vendeu a mesma peça, o estoque pode estar errado. Vender mesmo assim?', { ok: 'Vender mesmo assim', perigo: true });
+  }
+  return true;
+}
+async function finalizar() {
+  if (finalizando) return;
   if (!carrinho.length) return toast('Adicione pelo menos uma peça à venda.', 'warn');
   if (!pags.length) { toast('Escolha a forma de pagamento.', 'warn'); $('#pgto button').focus(); return; }
   const vendedor = vendedorAtual();
   if (!vendedor) { toast(S.vendedor === 'Outros' ? 'Escreva o nome de quem vendeu.' : 'Escolha quem fez a venda.', 'warn'); (S.vendedor === 'Outros' ? $('#vend-outro') : $('#vend button')).focus(); return; }
+  finalizando = true;
+  const bt = $('#btn-fin'), txt = bt.textContent; bt.disabled = true; bt.textContent = 'Conferindo estoque…';
+  try {
+    await conferirJanela();                                   // outra janela do app pode ter vendido antes: junta e confere
+    if (await garantirEstoque()) concluirVenda(vendedor);
+  } catch (e) {
+    console.error(e); toast('Não foi possível finalizar a venda. Tente de novo.', 'bad');
+  } finally {
+    finalizando = false; bt.disabled = false; bt.textContent = txt;
+  }
+}
+function concluirVenda(vendedor) {
   for (const i of carrinho) { const p = S.produtos[i.produto_id]; if (i.qtd > p.qtd) return toast(`Estoque insuficiente de ${nomeP(p)} ${p.tamanho}.`, 'bad'); }
   const { sub, desc, tot } = calc();
   redistribuir();
@@ -1415,9 +1544,10 @@ document.addEventListener('keydown', e => {
 window.addEventListener('hashchange', mostrar);
 window.addEventListener('online', () => { pintarSync(); sync(); });
 window.addEventListener('offline', () => pintarSync());
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sync(); else salvarJa(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') conferirJanela().catch(() => {}).then(() => sync()); else salvarJa(); });
 window.addEventListener('pagehide', () => salvarJa());
 setInterval(() => { if (document.visibilityState === 'visible') sync(); }, 25000);
+setInterval(() => { if (document.visibilityState === 'visible') conferirJanela().catch(() => {}); }, 4000);
 
 
 // ---------- aplicativo instalável (PWA) ----------
@@ -1473,6 +1603,7 @@ function registrarSW() {
     const base = novoEstado();
     S = { ...base, ...salvo, movs: salvo.movs || {}, outbox: { ...base.outbox, ...salvo.outbox }, cursor: { ...base.cursor, ...salvo.cursor }, config: { id: 'loja', ...salvo.config, valor: { ...DEF_CFG, ...(salvo.config?.valor || {}) } } };
   }
+  carimbo = (salvo && salvo.__c) || null;
   if (localStorage.getItem('pr-darre-tema') === 'true' && !salvo) S.tema = 'dark';
   aplicarTema();
   Object.values(S.ajustes).forEach(a => { if (!S.movs[a.id]) S.movs[a.id] = { ...a }; });   // ajustes ainda não enviados entram no histórico
