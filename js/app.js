@@ -339,7 +339,8 @@ function mostrar() {
   VISTAS.forEach(v => $('#v-' + v).hidden = v !== vista);
   $$('#nav button').forEach(b => b.dataset.go === vista ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
   window.scrollTo(0, 0);
-  if (vista === 'ajustes') rAjustes(); else renderDados();
+  try { if (vista === 'ajustes') rAjustes(); else renderDados(); }
+  catch (e) { console.error(e); if (window.drSocorro) window.drSocorro('Esta tela não conseguiu carregar.'); }
   if (vista === 'vender' && matchMedia('(pointer:fine)').matches) setTimeout(() => $('#busca').focus(), 30);
   if (vista === 'estoque' && matchMedia('(pointer:fine)').matches) setTimeout(() => $('#cons-busca').focus(), 30);
 }
@@ -1176,6 +1177,10 @@ drop policy if exists equipe_le on public.backups;
 create policy equipe_le on public.backups for select to authenticated using (true);
 grant select on public.backups to authenticated;
 
+-- o app logado pode pedir uma cópia na hora (usada antes de recuperar dados); visitantes não
+revoke execute on function public.prd_backup() from public, anon;
+grant execute on function public.prd_backup() to authenticated;
+
 -- horários em UTC: 11h = 08h de Brasília, 21h = 18h de Brasília
 select cron.unschedule(jobid) from cron.job where jobname in ('prd_backup_manha', 'prd_backup_noite');
 select cron.schedule('prd_backup_manha', '0 11 * * *', 'select public.prd_backup()');
@@ -1208,8 +1213,8 @@ function rAjustes() {
         <p id="vend-dica" style="margin:-4px 0 0;font-size:13px">Na venda aparece também a opção Outros, para escrever outro nome.</p>
         <div><button class="btn primary" type="submit">Salvar listas</button></div>
       </form></section>
-    <section class="panel"><h2>Cópias automáticas da nuvem</h2><p>O Supabase guarda sozinho uma cópia das peças e vendas às 08h e às 18h, por 30 dias. Use para recuperar algo apagado ou ao trocar de celular.</p>
-      <div class="btns"><button class="btn primary" type="button" data-act="ver-copias">Ver cópias e restaurar</button></div>
+    <section class="panel"><h2>Cópias automáticas da nuvem</h2><p>O Supabase guarda sozinho uma cópia às 08h e às 18h, por 30 dias. Se você apagar algo sem querer ou trocar de celular, é por aqui que recupera.</p>
+      <div class="btns"><button class="btn primary" type="button" data-act="ver-copias">Recuperar dados da nuvem</button></div>
       <details class="how"><summary>Ativar as cópias (uma vez só)</summary>
         <ol class="steps"><li>Toque em <b>Copiar script</b> abaixo.</li><li>No Supabase, abra <b>SQL Editor</b>, cole o script e clique em <b>Run</b>.</li><li>Pronto: uma primeira cópia já é feita na hora.</li></ol>
         <div class="btns"><button class="btn ghost sm" type="button" data-act="copiar-sql-backup">Copiar script</button><button class="btn ghost sm" type="button" data-act="baixar-sql-backup">Baixar como arquivo</button></div></details></section>
@@ -1321,21 +1326,33 @@ async function abrirCopiasNuvem() {
   let lista;
   try { lista = await Cloud.req('backups?select=id,criado_em&order=criado_em.desc&limit=60'); }
   catch (e) { return toast(/PGRST205|42P01|does not exist|schema cache/i.test(e.message) ? 'As cópias automáticas ainda não foram ativadas. Rode o script em Ajustes › Cópias automáticas da nuvem.' : 'Não foi possível buscar as cópias: ' + traduzErro(e.message), 'bad'); }
-  abrirDlg(`<div class="dlg-body"><header><h2>Cópias da nuvem</h2><button class="x" type="button" data-close aria-label="Fechar">×</button></header>
-    ${lista && lista.length ? `<p class="muted" style="margin-bottom:12px;font-size:13.5px"><b>Só o que falta</b> recoloca peças e vendas que não existem neste aparelho e não mexe no estoque atual. <b>Tudo</b> também devolve o estoque ao valor daquela data.</p>
-      <ul class="mini">${lista.map(c => `<li><div class="grow"><strong>${fmtDT(c.criado_em)}</strong></div><button class="btn ghost sm" type="button" data-copia="${c.id}" data-modo="falta">Só o que falta</button><button class="btn ghost sm" type="button" data-copia="${c.id}" data-modo="tudo">Tudo</button></li>`).join('')}</ul>`
+  const visto = new Set();   // cópias feitas no mesmo minuto aparecem uma vez só
+  lista = (lista || []).filter(c => { const k = String(c.criado_em).slice(0, 16); if (visto.has(k)) return false; visto.add(k); return true; });
+  const hoje = dayKey(new Date()), ontem = dayKey(new Date(Date.now() - 864e5));
+  const quando = iso => { const k = dayKey(new Date(iso)); return (k === hoje ? 'Hoje' : k === ontem ? 'Ontem' : new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })) + ' às ' + fmtHora(iso); };
+  abrirDlg(`<div class="dlg-body"><header><h2>Recuperar dados</h2><button class="x" type="button" data-close aria-label="Fechar">×</button></header>
+    ${lista.length ? `<p style="margin-bottom:14px">Escolha uma data. O aplicativo volta tudo como estava naquela hora: peças, preços e estoque. Antes de voltar, ele guarda uma cópia de como está agora, para você poder desfazer.</p>
+      <ul class="mini">${lista.map(c => `<li><div class="grow"><strong>${quando(c.criado_em)}</strong></div><button class="btn primary sm" type="button" data-copia="${c.id}">Recuperar</button></li>`).join('')}</ul>`
       : '<p>Ainda não há cópias. A primeira aparece depois de rodar o script, e as próximas às 08h e às 18h.</p>'}</div>`);
   dlg.querySelector('ul')?.addEventListener('click', async e => {
     const b = e.target.closest('[data-copia]'); if (!b) return;
-    const c = lista.find(x => x.id === b.dataset.copia), tudo = b.dataset.modo === 'tudo';
-    if (!await confirmar(tudo ? `Restaurar TUDO da cópia de ${fmtDT(c.criado_em)}? O estoque das peças volta ao valor daquela data.` : `Restaurar da cópia de ${fmtDT(c.criado_em)} só o que não existe neste aparelho?`, { ok: 'Restaurar', perigo: tudo })) return;
+    const c = lista.find(x => x.id === b.dataset.copia), q = quando(c.criado_em);
+    if (!await confirmar(`Voltar tudo para ${q}? Peças e estoque ficam como estavam nessa hora. Vendas e peças feitas depois não são apagadas, mas o estoque volta ao número daquele momento.`, { ok: 'Recuperar', perigo: true })) return;
+    b.disabled = true;
     try {
+      // guarda como está agora, para dar para desfazer
+      await sync();
+      try { await Cloud.req('rpc/prd_backup', { method: 'POST', body: '{}' }); }
+      catch (e2) {
+        console.warn(e2);
+        if (!await confirmar('Não consegui guardar uma cópia de como está agora, então não dá para desfazer depois. Continuar mesmo assim? (Para resolver, rode o script de novo em Ajustes › Cópias automáticas da nuvem.)', { ok: 'Continuar', perigo: true })) { b.disabled = false; return; }
+      }
       const r = await Cloud.req(`backups?id=eq.${c.id}&select=dados`);
       if (!r || !r[0] || !r[0].dados) throw new Error('cópia vazia');
-      const x = await aplicarBackup(r[0].dados, !tudo);
-      dlg.close(); renderDados();
-      toast(`Cópia restaurada: ${x.np} ${x.np === 1 ? 'peça' : 'peças'} e ${x.nv} ${x.nv === 1 ? 'venda' : 'vendas'} recolocadas.`, 'ok');
-    } catch (err) { toast('Não foi possível restaurar: ' + traduzErro(err.message), 'bad'); }
+      const x = await aplicarBackup(r[0].dados, false);
+      dlg.close(); renderDados(); sync();
+      toast(`Tudo voltou para ${q}: ${x.np} ${x.np === 1 ? 'peça' : 'peças'} conferidas.`, 'ok');
+    } catch (err) { b.disabled = false; toast('Não foi possível recuperar: ' + traduzErro(err.message), 'bad'); }
   });
 }
 
@@ -1466,7 +1483,7 @@ function registrarSW() {
     try { const antigo = JSON.parse(localStorage.getItem('pr-darre-dados') || 'null'); if (antigo && (antigo.pecas?.length || antigo.vendas?.length)) migrou = importarV2(antigo); } catch {}
     localStorage.setItem('pr-darre-migrado', '1'); await salvarJa();
   }
-  mostrar(); registrarSW(); protegerArmazenamento();
+  mostrar(); window.__drOk = true; registrarSW(); protegerArmazenamento();
   if (migrou) toast(`Trouxe ${migrou.np} ${migrou.np === 1 ? 'peça' : 'peças'} e ${migrou.nv} ${migrou.nv === 1 ? 'venda' : 'vendas'} do sistema anterior.`, 'ok');
   sync();
 })();
